@@ -1,0 +1,27 @@
+# Build artifacts
+_build/
+_flatpak/
+_flatpak_x86_64/
+_flatpak_aarch64/
+.flatpak-builder/
+repo/
+*.flatpak
+
+# Python
+__pycache__/
+*.pyc
+*.egg-info/
+.venv/
+
+# Editors
+.vscode/
+.idea/
+*.swp
+.DS_Store
+
+# Claude workspace
+.claude/
+
+# Generated (regenerated per build)
+build-aux/flatpak/python3-deps.json
+build-aux/flatpak/python3-deps.json.bak

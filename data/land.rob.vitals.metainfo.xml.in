@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>land.rob.vitals</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>GPL-3.0-or-later</project_license>
+
+  <name>Vitals</name>
+  <summary>Health dashboard for the Pulse hub</summary>
+
+  <description>
+    <p>
+      Vitals is the native GNOME dashboard for Pulse, the local-first
+      health-data hub. It shows your activity, vital signs and trends —
+      and it is where you control which apps may read or write each kind
+      of health data.
+    </p>
+    <p>
+      All data stays on your device in the Pulse store; Vitals is just a
+      view onto it, talking to the Pulse daemon over D-Bus. No account, no
+      cloud.
+    </p>
+    <ul>
+      <li>Today: activity rings and your latest vital signs</li>
+      <li>Trends: per-metric charts over time</li>
+      <li>Permissions: grant or revoke each app's access, per data type</li>
+      <li>Adaptive layout for desktop GNOME and Phosh phones</li>
+    </ul>
+  </description>
+
+  <launchable type="desktop-id">land.rob.vitals.desktop</launchable>
+
+  <url type="homepage">https://codeberg.org/robland/vitals</url>
+  <url type="bugtracker">https://codeberg.org/robland/vitals/issues</url>
+
+  <developer id="land.rob">
+    <name>Rob Daniel</name>
+  </developer>
+
+  <content_rating type="oars-1.1"/>
+
+  <releases>
+    <release version="0.1.0" date="2026-06-03">
+      <description>
+        <p>First release: Today, Trends and Permissions views over Pulse.</p>
+      </description>
+    </release>
+  </releases>
+</component>

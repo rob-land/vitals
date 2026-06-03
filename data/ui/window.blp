@@ -1,0 +1,103 @@
+using Gtk 4.0;
+using Adw 1;
+
+template $VitalsWindow: Adw.ApplicationWindow {
+  title: _("Vitals");
+  default-width: 720;
+  default-height: 560;
+  width-request: 360;
+  height-request: 360;
+
+  content: Adw.ToastOverlay toast_overlay {
+    child: Adw.BreakpointBin {
+      width-request: 360;
+      height-request: 360;
+
+      Adw.Breakpoint {
+        condition ("max-width: 600sp")
+        setters {
+          title_stack.visible-child-name: "narrow";
+          view_switcher_bar.reveal: true;
+        }
+      }
+
+      child: Adw.ToolbarView {
+        [top]
+        Adw.HeaderBar {
+          title-widget: Gtk.Stack title_stack {
+            StackPage {
+              name: "wide";
+              child: Adw.ViewSwitcher {
+                stack: view_stack;
+                policy: wide;
+              };
+            }
+
+            StackPage {
+              name: "narrow";
+              child: Adw.WindowTitle {
+                title: _("Vitals");
+              };
+            }
+          };
+
+          [end]
+          MenuButton {
+            icon-name: "open-menu-symbolic";
+            primary: true;
+            menu-model: primary_menu;
+            tooltip-text: _("Main Menu");
+          }
+        }
+
+        content: Adw.ViewStack view_stack {
+          Adw.ViewStackPage {
+            name: "today";
+            title: _("Today");
+            icon-name: "go-home-symbolic";
+            child: Adw.Bin today_bin {};
+          }
+
+          Adw.ViewStackPage {
+            name: "trends";
+            title: _("Trends");
+            icon-name: "histogram-symbolic";
+            child: Adw.Bin trends_bin {};
+          }
+
+          Adw.ViewStackPage {
+            name: "permissions";
+            title: _("Permissions");
+            icon-name: "dialog-password-symbolic";
+            child: Adw.Bin permissions_bin {};
+          }
+        };
+
+        [bottom]
+        Adw.ViewSwitcherBar view_switcher_bar {
+          stack: view_stack;
+          reveal: false;
+        }
+      };
+    };
+  };
+}
+
+menu primary_menu {
+  item {
+    label: _("Refresh");
+    action: "app.refresh";
+  }
+
+  section {
+    item {
+      label: _("Keyboard Shortcuts");
+      action: "win.show-help-overlay";
+    }
+
+    item {
+      label: _("About Vitals");
+      action: "app.about";
+    }
+  }
+}

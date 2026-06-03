@@ -1,0 +1,47 @@
+{
+  "app-id": "land.rob.vitals",
+  "runtime": "org.gnome.Platform",
+  "runtime-version": "50",
+  "sdk": "org.gnome.Sdk",
+  "command": "vitals",
+  "finish-args": [
+    "--share=ipc",
+    "--socket=fallback-x11",
+    "--socket=wayland",
+    "--device=dri",
+    "--talk-name=land.rob.pulse"
+  ],
+  "cleanup": [
+    "/include",
+    "/lib/pkgconfig",
+    "/man",
+    "/share/doc",
+    "/share/gtk-doc",
+    "*.la",
+    "*.a"
+  ],
+  "modules": [
+    {
+      "name": "blueprint-compiler",
+      "buildsystem": "meson",
+      "cleanup": ["*"],
+      "sources": [
+        {
+          "type": "git",
+          "url": "https://gitlab.gnome.org/jwestman/blueprint-compiler.git",
+          "tag": "v0.16.0"
+        }
+      ]
+    },
+    {
+      "name": "vitals",
+      "buildsystem": "meson",
+      "sources": [
+        {
+          "type": "dir",
+          "path": "../.."
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,29 @@
+using Gtk 4.0;
+
+ShortcutsWindow help_overlay {
+  modal: true;
+
+  ShortcutsSection {
+    section-name: "main";
+    visible: true;
+
+    ShortcutsGroup {
+      title: C_("shortcut window", "General");
+
+      ShortcutsShortcut {
+        accelerator: "<ctrl>r";
+        title: C_("shortcut window", "Refresh");
+      }
+
+      ShortcutsShortcut {
+        accelerator: "<ctrl>question";
+        title: C_("shortcut window", "Show keyboard shortcuts");
+      }
+
+      ShortcutsShortcut {
+        accelerator: "<ctrl>q";
+        title: C_("shortcut window", "Quit");
+      }
+    }
+  }
+}

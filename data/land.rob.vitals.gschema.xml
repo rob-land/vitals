@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<schemalist>
+  <schema id="land.rob.vitals" path="/land/rob/vitals/">
+    <key name="daily-step-goal" type="i">
+      <default>10000</default>
+      <range min="0" max="100000"/>
+      <summary>Daily step goal shown on the Today ring</summary>
+      <description>Used to compute the activity ring's progress. 0 hides the goal.</description>
+    </key>
+    <key name="trends-metric" type="s">
+      <default>"step_count"</default>
+      <summary>Last metric selected on the Trends page</summary>
+    </key>
+    <key name="trends-days" type="i">
+      <default>14</default>
+      <range min="7" max="90"/>
+      <summary>Number of days shown on the Trends chart</summary>
+    </key>
+    <key name="window-width" type="i">
+      <default>720</default>
+      <summary>Last window width</summary>
+    </key>
+    <key name="window-height" type="i">
+      <default>560</default>
+      <summary>Last window height</summary>
+    </key>
+    <key name="window-maximized" type="b">
+      <default>false</default>
+      <summary>Whether the window was maximised at last close</summary>
+    </key>
+  </schema>
+</schemalist>

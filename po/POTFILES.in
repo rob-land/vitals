@@ -1,0 +1,9 @@
+data/land.rob.vitals.desktop.in
+data/land.rob.vitals.metainfo.xml.in
+data/ui/window.blp
+data/ui/help-overlay.blp
+src/vitals/application.py
+src/vitals/window.py
+src/vitals/pages/today.py
+src/vitals/pages/trends.py
+src/vitals/pages/permissions.py
