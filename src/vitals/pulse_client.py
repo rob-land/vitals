@@ -94,3 +94,26 @@ class PulseClient:
     def revoke(self, app_id: str, types, access: str) -> None:
         self._call(ADMIN_PATH, ADMIN_IFACE, "Revoke",
                    GLib.Variant("(sass)", (app_id, list(types), access)), None)
+
+    # ── Access requests (the consent prompt) ──────────────────────
+    def list_requests(self) -> list[dict]:
+        return self._json_call("ListRequests", None, path=ADMIN_PATH, iface=ADMIN_IFACE)
+
+    def approve_request(self, app_id: str) -> None:
+        self._call(ADMIN_PATH, ADMIN_IFACE, "ApproveRequest",
+                   GLib.Variant("(s)", (app_id,)), None)
+
+    def deny_request(self, app_id: str) -> None:
+        self._call(ADMIN_PATH, ADMIN_IFACE, "DenyRequest",
+                   GLib.Variant("(s)", (app_id,)), None)
+
+    def subscribe_requests(self, callback) -> int:
+        """Call ``callback()`` (on the main loop) whenever the pending
+        request set changes. Returns a subscription id (0 if no bus)."""
+        try:
+            bus = self._bus_get()
+        except PulseUnavailable:
+            return 0
+        return bus.signal_subscribe(
+            BUS_NAME, ADMIN_IFACE, "RequestsChanged", ADMIN_PATH, None,
+            Gio.DBusSignalFlags.NONE, lambda *_: callback())

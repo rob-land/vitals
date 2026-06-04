@@ -50,13 +50,70 @@ class PermissionsPage(PulsePage):
         intro.add(grant_button)
         self._page.add(intro)
 
+        # Pending access requests appear above the granted-apps list.
+        self._requests_group = Adw.PreferencesGroup(
+            title="Requests", visible=False,
+            description="Apps asking for access. Approve to grant what they "
+                        "requested.")
+        self._page.add(self._requests_group)
+        self._request_rows: list[Gtk.Widget] = []
+
+        # Live-update when a source asks for (or is granted) access.
+        self._client.subscribe_requests(self.refresh)
+
     def refresh(self) -> None:
         try:
+            requests = self._client.list_requests()
             grants = self._client.list_grants()
+            self._rebuild_requests(requests)
             self._rebuild(grants)
             self._show_content()
         except PulseUnavailable:
             self._show_unavailable()
+
+    # ── pending requests ──────────────────────────────────────────
+    def _rebuild_requests(self, requests: list[dict]) -> None:
+        for row in self._request_rows:
+            self._requests_group.remove(row)
+        self._request_rows = []
+        self._requests_group.set_visible(bool(requests))
+
+        for req in requests:
+            parts = []
+            if req.get("write"):
+                parts.append("write " + ", ".join(req["write"]))
+            if req.get("read"):
+                parts.append("read " + ", ".join(req["read"]))
+            row = Adw.ActionRow(title=req["app_id"],
+                                subtitle="; ".join(parts) or "no data types")
+            deny = Gtk.Button(label="Deny", valign=Gtk.Align.CENTER)
+            deny.add_css_class("flat")
+            deny.connect("clicked", self._on_deny, req["app_id"])
+            approve = Gtk.Button(label="Approve", valign=Gtk.Align.CENTER)
+            approve.add_css_class("suggested-action")
+            approve.connect("clicked", self._on_approve, req["app_id"])
+            row.add_suffix(deny)
+            row.add_suffix(approve)
+            self._requests_group.add(row)
+            self._request_rows.append(row)
+
+    def _on_approve(self, _button, app_id: str) -> None:
+        try:
+            self._client.approve_request(app_id)
+        except PulseUnavailable:
+            self._show_unavailable()
+            return
+        self._toast(f"Granted access to {app_id}")
+        self.refresh()
+
+    def _on_deny(self, _button, app_id: str) -> None:
+        try:
+            self._client.deny_request(app_id)
+        except PulseUnavailable:
+            self._show_unavailable()
+            return
+        self._toast(f"Dismissed request from {app_id}")
+        self.refresh()
 
     # ── grants list ───────────────────────────────────────────────
     def _rebuild(self, grants: list[dict]) -> None:
