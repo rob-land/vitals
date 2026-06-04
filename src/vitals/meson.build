@@ -5,6 +5,7 @@ python.install_sources(
     'main.py',
     'application.py',
     'window.py',
+    'preferences.py',
     'pulse_client.py',
     'format.py',
     'logging_setup.py',

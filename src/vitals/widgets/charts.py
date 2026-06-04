@@ -13,7 +13,7 @@ import math
 
 from gi.repository import Gtk
 
-from vitals.format import nice_max
+from vitals.format import format_value, nice_max
 
 # A pleasant fixed accent; the track/labels derive from the theme fg colour.
 _ACCENT = (0.21, 0.52, 0.89)
@@ -119,3 +119,14 @@ class BarChart(Gtk.DrawingArea):
             cr.line_to(width, gy)
             cr.stroke()
             cr.set_dash([])
+            cr.select_font_face("Sans")
+            cr.set_font_size(10)
+            cr.move_to(width - 28, max(gy - 3, pad_top + 9))
+            cr.show_text("goal")
+
+        # Axis maximum (top-left).
+        cr.set_source_rgba(fg.red, fg.green, fg.blue, 0.5)
+        cr.select_font_face("Sans")
+        cr.set_font_size(11)
+        cr.move_to(2, pad_top + 9)
+        cr.show_text(format_value(top))

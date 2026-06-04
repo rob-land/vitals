@@ -29,9 +29,11 @@ class VitalsApplication(Adw.Application):
         self._make_action("about", self._show_about)
         self._make_action("quit", lambda *_: self.quit())
         self._make_action("refresh", self._refresh)
+        self._make_action("preferences", self._show_preferences)
 
         self.set_accels_for_action("app.quit", ["<Control>q"])
         self.set_accels_for_action("app.refresh", ["<Control>r"])
+        self.set_accels_for_action("app.preferences", ["<Control>comma"])
         self.set_accels_for_action("win.show-help-overlay", ["<Control>question"])
 
     def _make_action(self, name: str, cb) -> Gio.SimpleAction:
@@ -51,6 +53,12 @@ class VitalsApplication(Adw.Application):
         win = self.props.active_window
         if win is not None:
             win.refresh()
+
+    def _show_preferences(self, *_):
+        from vitals.preferences import VitalsPreferences
+        win = self.props.active_window
+        if win is not None:
+            VitalsPreferences(self._settings).present(win)
 
     def _show_about(self, *_):
         about = Adw.AboutDialog(

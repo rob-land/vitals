@@ -59,6 +59,9 @@ class VitalsWindow(Adw.ApplicationWindow):
         # Refresh the visible page when the user switches views, so we
         # don't pull every page's data up front.
         self.view_stack.connect("notify::visible-child", self._on_view_changed)
+        # Reflect preference changes (step goal, trends window) immediately.
+        for key in ("daily-step-goal", "trends-days"):
+            settings.connect(f"changed::{key}", lambda *_: self.refresh())
         self.refresh()
 
     # ── Public API ────────────────────────────────────────────────
