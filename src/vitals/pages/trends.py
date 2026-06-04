@@ -10,7 +10,7 @@ from gi.repository import Adw, Gtk
 from vitals.format import humanize_key, unit_label
 from vitals.pages import PulsePage
 from vitals.pulse_client import PulseUnavailable
-from vitals.widgets import BarChart
+from vitals.widgets import BarChart, LineChart
 
 log = logging.getLogger(__name__)
 
@@ -44,10 +44,16 @@ class TrendsPage(PulsePage):
         self._caption.add_css_class("caption")
         box.append(self._caption)
 
-        self._chart = BarChart()
+        # Additive metrics (steps, energy) render as bars; metrics that vary
+        # around a value (weight, heart rate) render as a line.
+        self._bar = BarChart()
+        self._line = LineChart()
+        self._chart_stack = Gtk.Stack()
+        self._chart_stack.add_named(self._bar, "bar")
+        self._chart_stack.add_named(self._line, "line")
         frame = Gtk.Frame()
         frame.add_css_class("card")
-        frame.set_child(self._chart)
+        frame.set_child(self._chart_stack)
         box.append(frame)
 
     def refresh(self) -> None:
@@ -101,11 +107,18 @@ class TrendsPage(PulsePage):
         }).get("buckets", [])
 
         values = [b["value"] for b in buckets]
-        goal = (self._settings.get_int("daily-step-goal")
-                if key == "step_count" else None)
-        self._chart.set_data(values, goal or None)
+        if op == "sum":
+            goal = self._settings.get_int("daily-step-goal") if key == "step_count" else None
+            self._bar.set_data(values, goal or None)
+            self._chart_stack.set_visible_child_name("bar")
+        else:
+            self._line.set_data(values)
+            self._chart_stack.set_visible_child_name("line")
 
         unit = (self._catalog.get(key) or {}).get("canonical_unit")
         verb = "total" if op == "sum" else "average"
+        span = f"{days} days"
+        if buckets:
+            span = f"{buckets[0]['start'][:10]} – {buckets[-1]['start'][:10]}"
         self._caption.set_label(
-            f"Daily {verb} · last {days} days · {unit_label(unit) or 'value'}")
+            f"Daily {verb} · {span} · {unit_label(unit) or 'value'}")

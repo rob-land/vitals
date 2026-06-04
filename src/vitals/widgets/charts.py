@@ -130,3 +130,84 @@ class BarChart(Gtk.DrawingArea):
         cr.set_font_size(11)
         cr.move_to(2, pad_top + 9)
         cr.show_text(format_value(top))
+
+
+class LineChart(Gtk.DrawingArea):
+    """A line/area chart for metrics that vary around a value (weight, heart
+    rate, glucose) rather than accumulate. Auto-scales to the data range."""
+
+    __gtype_name__ = "VitalsLineChart"
+
+    def __init__(self):
+        super().__init__()
+        self._values: list[float | None] = []
+        self.set_content_height(180)
+        self.set_hexpand(True)
+        self.set_draw_func(self._draw)
+
+    def set_data(self, values) -> None:
+        self._values = list(values)
+        self.queue_draw()
+
+    def _draw(self, _area, cr, width, height, *_):
+        fg = self.get_color()
+        pad_top, pad_bottom, pad_left = 10, 18, 4
+        plot_h = height - pad_top - pad_bottom
+
+        present = [v for v in self._values if v is not None]
+        if len(present) < 1:
+            cr.set_source_rgba(fg.red, fg.green, fg.blue, 0.45)
+            cr.select_font_face("Sans")
+            cr.set_font_size(13)
+            cr.move_to(8, height / 2)
+            cr.show_text("No data yet")
+            return
+
+        lo, hi = min(present), max(present)
+        span = (hi - lo) or max(abs(hi) * 0.1, 1.0)
+        lo -= span * 0.1
+        hi += span * 0.1
+        rng = hi - lo
+
+        n = len(self._values)
+        step = (width - pad_left) / max(n - 1, 1)
+
+        def xy(i, value):
+            x = pad_left + i * step
+            y = pad_top + plot_h * (1 - (value - lo) / rng)
+            return x, y
+
+        # Area fill under the line.
+        points = [(i, v) for i, v in enumerate(self._values) if v is not None]
+        cr.set_source_rgba(*_ACCENT, 0.12)
+        cr.move_to(*xy(*points[0]))
+        for i, v in points:
+            cr.line_to(*xy(i, v))
+        last_x = xy(points[-1][0], points[-1][1])[0]
+        cr.line_to(last_x, pad_top + plot_h)
+        cr.line_to(xy(*points[0])[0], pad_top + plot_h)
+        cr.close_path()
+        cr.fill()
+
+        # The line itself.
+        cr.set_source_rgb(*_ACCENT)
+        cr.set_line_width(2)
+        cr.set_line_join(1)  # round
+        cr.move_to(*xy(*points[0]))
+        for i, v in points:
+            cr.line_to(*xy(i, v))
+        cr.stroke()
+
+        # End-point dot + latest value.
+        ex, ey = xy(*points[-1])
+        cr.arc(ex, ey, 3, 0, 2 * 3.14159)
+        cr.fill()
+
+        # Min / max labels.
+        cr.set_source_rgba(fg.red, fg.green, fg.blue, 0.5)
+        cr.select_font_face("Sans")
+        cr.set_font_size(11)
+        cr.move_to(2, pad_top + 9)
+        cr.show_text(format_value(max(present)))
+        cr.move_to(2, pad_top + plot_h)
+        cr.show_text(format_value(min(present)))
