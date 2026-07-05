@@ -1,4 +1,4 @@
-"""Pairing dialog — scan for nearby watches, let the user pick one.
+"""Pairing dialog — scan for nearby devices, let the user pick one.
 
 Constructed imperatively (no .blp) to keep the v0.1.0 surface small.
 A future revision can extract the layout to a Blueprint template if
@@ -18,7 +18,7 @@ from collections.abc import Callable
 
 from gi.repository import Adw, GLib, Gtk
 
-from vitals.ble import BleManager, scan_devices
+from vitals.ble import BleManager
 from vitals.devices.base import matching_device
 
 log = logging.getLogger(__name__)
@@ -32,10 +32,11 @@ class PairingDialog(Adw.Dialog):
     # without dragging out the dialog when nothing is around.
     SCAN_TIMEOUT_S = 8.0
 
-    def __init__(self, ble: BleManager,
+    def __init__(self, ble: BleManager, broker,
                  on_paired: Callable[[str, str, str, bool], None]):
         super().__init__()
         self._ble = ble
+        self._broker = broker
         self._on_paired = on_paired
         self._scan_generation = 0
 
@@ -132,7 +133,7 @@ class PairingDialog(Adw.Dialog):
         self._scan_generation += 1
         gen = self._scan_generation
         self._show_page("scanning")
-        future = self._ble.submit(scan_devices(timeout=self.SCAN_TIMEOUT_S))
+        future = self._broker.collect(self.SCAN_TIMEOUT_S)
         future.add_done_callback(lambda f: self._scan_done(f, gen))
 
     def _scan_done(self, future, gen: int) -> None:

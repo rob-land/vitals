@@ -83,6 +83,9 @@ class DeviceManager(GObject.Object):
         self._transport_locks: dict[str, asyncio.Lock] = {}
         self._connect_sem: asyncio.Semaphore | None = None
         self._bg_sync_id: int | None = None
+        self._broker = None
+        # Sensor addresses currently mid-read (BLE loop only).
+        self._sensor_busy: set[str] = set()
         self._load()
 
     # ── registry (main thread) ────────────────────────────────────
@@ -319,6 +322,61 @@ class DeviceManager(GObject.Object):
                 if self.sync_device(entry.address):
                     started += 1
         return started
+
+    # ── opportunistic sensors (ScanBroker) ────────────────────────
+    def attach_scan_broker(self, broker) -> None:
+        """Route advertisements to registered sensors; listening runs
+        whenever at least one enabled sensor is registered."""
+        self._broker = broker
+        broker.set_sensor_handler(self._on_sensor_advert)
+        self.connect("device-list-changed",
+                     lambda *_: self._reconcile_listening())
+        self._reconcile_listening()
+
+    def _reconcile_listening(self) -> None:
+        if self._broker is None:
+            return
+        want = any(e.enabled and e.role == ROLE_SENSOR
+                   for e in self._entries.values())
+        if want:
+            self._broker.start_listening()
+        else:
+            self._broker.stop_listening()
+
+    async def _on_sensor_advert(self, device, advertisement) -> None:
+        """BLE loop: one advertisement → maybe a reading from a
+        registered sensor. `_entries` is only mutated on the main
+        thread; the lookup here is read-only."""
+        entry = self._entries.get(device.address)
+        if (entry is None or not entry.enabled
+                or entry.role != ROLE_SENSOR or entry.plugin is None):
+            return
+        plugin = entry.plugin
+        if not plugin.match_advertisement(device, advertisement):
+            return
+        if device.address in self._sensor_busy:
+            return
+        self._sensor_busy.add(device.address)
+        try:
+            instance = plugin(address=entry.address, name=entry.name)
+            envelopes = await instance.handle_advertisement(
+                device, advertisement)
+        finally:
+            self._sensor_busy.discard(device.address)
+        if envelopes:
+            self._recorder.ingest_from_thread(envelopes)
+            GLib.idle_add(self._touch_sensor, entry.address, len(envelopes))
+
+    def _touch_sensor(self, address: str, count: int) -> bool:
+        entry = self._entries.get(address)
+        if entry is not None:
+            entry.last_sync_ms = round(time.time() * 1000)
+            with self._store.connection as con:
+                con.execute("UPDATE devices SET last_sync_ms=? WHERE address=?",
+                            (entry.last_sync_ms, address))
+            self.emit("device-synced", address,
+                      f"{entry.name}: reading received")
+        return GLib.SOURCE_REMOVE
 
     # ── background timer (main thread) ────────────────────────────
     def reschedule_background_sync(self) -> None:

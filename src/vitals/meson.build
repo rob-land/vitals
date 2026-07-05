@@ -30,6 +30,7 @@ python.install_sources(
     'ble/__init__.py',
     'ble/bluetooth_state.py',
     'ble/manager.py',
+    'ble/scan_broker.py',
   ),
   subdir: meson.project_name() / 'ble',
 )
@@ -47,6 +48,16 @@ python.install_sources(
     'devices/weather.py',
   ),
   subdir: meson.project_name() / 'devices',
+)
+
+python.install_sources(
+  files(
+    'devices/sensors/__init__.py',
+    'devices/sensors/decoders.py',
+    'devices/sensors/gatt.py',
+    'devices/sensors/plugin.py',
+  ),
+  subdir: meson.project_name() / 'devices' / 'sensors',
 )
 
 python.install_sources(

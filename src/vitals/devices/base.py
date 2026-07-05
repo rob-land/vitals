@@ -393,6 +393,7 @@ def _load_builtins() -> None:
         pinetime,  # noqa: F401
     )
     from vitals.devices.pebble import pebble  # noqa: F401
+    from vitals.devices.sensors import plugin  # noqa: F401
     _BUILTINS_LOADED = True
 
 

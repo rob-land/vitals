@@ -16,10 +16,11 @@ _STATE_LABELS = {"syncing": "Syncing…", "flashing": "Updating…",
 
 
 class Devices(Page):
-    def __init__(self, manager, ble):
+    def __init__(self, manager, ble, broker):
         super().__init__()
         self._manager = manager
         self._ble = ble
+        self._broker = broker
 
         self._scroller = Gtk.ScrolledWindow(
             hscrollbar_policy=Gtk.PolicyType.NEVER, vexpand=True)
@@ -94,18 +95,18 @@ class Devices(Page):
 
     def _on_pair(self, *_):
         from vitals.dialogs.pairing import PairingDialog
-        PairingDialog(self._ble, self._on_paired).present(self.get_root())
+        PairingDialog(self._ble, self._broker,
+                      self._on_paired).present(self.get_root())
 
     def _on_paired(self, address: str, name: str, kind: str,
                    recovery: bool) -> None:
         entry = self._manager.add(address, name, kind)
         self._toast(f"Paired {entry.name}")
         if recovery:
-            # A factory-fresh watch on recovery firmware (Pebble PRF) —
-            # the firmware dialog arrives with the Pebble port; until
-            # then just tell the user what we saw.
-            self._toast(f"{entry.name} is in recovery mode — firmware "
-                        "install lands with the Pebble port")
+            # A factory-fresh watch on recovery firmware (Pebble PRF,
+            # showing the setup QR): offer the onboarding flash now.
+            from vitals.dialogs.firmware_dialog import FirmwareDialog
+            FirmwareDialog(self._ble, entry).present(self.get_root())
 
 
 def _last_sync(entry) -> str:

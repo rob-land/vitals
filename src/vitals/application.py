@@ -7,6 +7,7 @@ import logging
 from gi.repository import Adw, Gio, GLib, Gtk
 
 from vitals.ble import BleManager
+from vitals.ble.scan_broker import ScanBroker
 from vitals.const import APP_ID, APP_NAME, VERSION
 from vitals.core import migrate, resources
 from vitals.core.catalog import Catalog
@@ -29,6 +30,7 @@ class VitalsApplication(Adw.Application):
         self.record_bus = RecordBus()
         self.recorder: Recorder | None = None
         self.ble: BleManager | None = None
+        self.scan_broker: ScanBroker | None = None
         self.device_manager: DeviceManager | None = None
         self._adoption: dict | None = None
         # True when launched via --background (autostart): the app holds
@@ -79,8 +81,10 @@ class VitalsApplication(Adw.Application):
         self.recorder = Recorder(self.store, self.catalog, self.record_bus)
         self.ble = BleManager()
         self.ble.start()
+        self.scan_broker = ScanBroker(self.ble)
         self.device_manager = DeviceManager(
             self.store, self.recorder, self.settings, self.ble)
+        self.device_manager.attach_scan_broker(self.scan_broker)
         self.device_manager.reschedule_background_sync()
         self.settings.connect(
             "changed::background-sync-interval",
