@@ -7,6 +7,8 @@ src/vitals/window.py
 src/vitals/pages/dashboard.py
 src/vitals/pages/timeline.py
 src/vitals/pages/devices.py
+src/vitals/pages/device_detail.py
+src/vitals/dialogs/pairing.py
 src/vitals/preferences.py
 src/vitals/sources/food.py
 src/vitals/sources/food_lookup.py

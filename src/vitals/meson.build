@@ -4,6 +4,7 @@ python.install_sources(
     '__main__.py',
     'main.py',
     'application.py',
+    'background_portal.py',
     'window.py',
     'preferences.py',
     'format.py',
@@ -18,8 +19,36 @@ python.install_sources(
     'pages/dashboard.py',
     'pages/timeline.py',
     'pages/devices.py',
+    'pages/device_detail.py',
   ),
   subdir: meson.project_name() / 'pages',
+)
+
+python.install_sources(
+  files(
+    'ble/__init__.py',
+    'ble/bluetooth_state.py',
+    'ble/manager.py',
+  ),
+  subdir: meson.project_name() / 'ble',
+)
+
+python.install_sources(
+  files(
+    'devices/__init__.py',
+    'devices/base.py',
+    'devices/manager.py',
+    'devices/pinetime.py',
+  ),
+  subdir: meson.project_name() / 'devices',
+)
+
+python.install_sources(
+  files(
+    'dialogs/__init__.py',
+    'dialogs/pairing.py',
+  ),
+  subdir: meson.project_name() / 'dialogs',
 )
 
 python.install_sources(

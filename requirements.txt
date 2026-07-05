@@ -1,3 +1,4 @@
 # Runtime dependencies. PyGObject (the `gi` bindings), GTK4 and libadwaita
 # are provided by the GNOME platform / runtime, not pinned here.
 PyYAML>=6.0
+bleak>=0.22

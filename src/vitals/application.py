@@ -6,11 +6,13 @@ import logging
 
 from gi.repository import Adw, Gio, GLib, Gtk
 
+from vitals.ble import BleManager
 from vitals.const import APP_ID, APP_NAME, VERSION
 from vitals.core import migrate, resources
 from vitals.core.catalog import Catalog
 from vitals.core.events import RecordBus
 from vitals.core.store import Store
+from vitals.devices.manager import DeviceManager
 from vitals.ingest import Recorder
 from vitals.window import VitalsWindow
 
@@ -20,19 +22,29 @@ log = logging.getLogger(__name__)
 class VitalsApplication(Adw.Application):
     def __init__(self):
         super().__init__(application_id=APP_ID,
-                         flags=Gio.ApplicationFlags.DEFAULT_FLAGS)
+                         flags=Gio.ApplicationFlags.HANDLES_COMMAND_LINE)
         self.settings = Gio.Settings.new(APP_ID)
         self.store: Store | None = None
         self.catalog: Catalog | None = None
         self.record_bus = RecordBus()
         self.recorder: Recorder | None = None
+        self.ble: BleManager | None = None
+        self.device_manager: DeviceManager | None = None
         self._adoption: dict | None = None
+        # True when launched via --background (autostart): the app holds
+        # without a window so background syncs run; a later activate
+        # builds the window.
+        self._background_launch = False
+        self._held = False
 
         # Registered so --help lists it and Gio accepts it; the actual
         # level is read from sys.argv by configure_logging().
         self.add_main_option(
             "debug", ord("d"), GLib.OptionFlags.NONE, GLib.OptionArg.NONE,
             "Enable debug logging", None)
+        self.add_main_option(
+            "background", ord("b"), GLib.OptionFlags.NONE, GLib.OptionArg.NONE,
+            "Run without showing a window (autostart entry uses this)", None)
 
         self._make_action("about", self._show_about)
         self._make_action("quit", lambda *_: self.quit())
@@ -65,13 +77,44 @@ class VitalsApplication(Adw.Application):
         self.store.migrate()
         self.catalog = Catalog.load()
         self.recorder = Recorder(self.store, self.catalog, self.record_bus)
+        self.ble = BleManager()
+        self.ble.start()
+        self.device_manager = DeviceManager(
+            self.store, self.recorder, self.settings, self.ble)
+        self.device_manager.reschedule_background_sync()
+        self.settings.connect(
+            "changed::background-sync-interval",
+            lambda *_: self.device_manager.reschedule_background_sync())
 
     def do_shutdown(self):
+        if self.ble is not None:
+            self.ble.stop()
+            self.ble = None
         if self.store is not None:
             self.store.close()
         Adw.Application.do_shutdown(self)
 
+    def do_command_line(self, command_line) -> int:
+        opts = command_line.get_options_dict().end().unpack()
+        if opts.get("background"):
+            # Autostart launch: hold without a window; the background
+            # timer (armed in do_startup) does the rest.
+            self._background_launch = True
+            self.hold_for_background()
+        else:
+            self.activate()
+        return 0
+
+    def hold_for_background(self) -> None:
+        """Keep the app (and its BLE loop) alive with no window open."""
+        if not self._held:
+            self.hold()
+            self._held = True
+
     def do_activate(self):
+        if self._background_launch and self.props.active_window is None:
+            self._background_launch = False
+            return
         win = self.props.active_window
         if win is None:
             win = VitalsWindow(application=self)
@@ -80,7 +123,13 @@ class VitalsApplication(Adw.Application):
                     f"Imported {self._adoption['records']:,} records from "
                     "Pulse — the retiring apps no longer feed this data")
                 self._adoption = None
+        win.set_visible(True)
         win.present()
+        # Returning to foreground after close-to-background: release
+        # the hold we took for the hidden window.
+        if self._held:
+            self.release()
+            self._held = False
 
     # ── actions ───────────────────────────────────────────────────
     def _refresh(self, *_):

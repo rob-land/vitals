@@ -25,6 +25,23 @@
       <default>"body_weight"</default>
       <summary>Measurement last logged from the reading form</summary>
     </key>
+    <key name="sync-time-on-connect" type="b">
+      <default>true</default>
+      <summary>Push the host clock to a watch on every sync</summary>
+    </key>
+    <key name="background-sync-interval" type="i">
+      <default>60</default>
+      <range min="0" max="1440"/>
+      <summary>Minutes between background watch syncs (0 disables)</summary>
+    </key>
+    <key name="run-in-background" type="b">
+      <default>false</default>
+      <summary>Keep running (and syncing) when the window is closed</summary>
+    </key>
+    <key name="autostart-enabled" type="b">
+      <default>false</default>
+      <summary>Start in the background at login (via the portal)</summary>
+    </key>
     <key name="usda-api-key" type="s">
       <default>""</default>
       <summary>USDA FoodData Central API key</summary>

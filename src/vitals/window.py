@@ -20,6 +20,7 @@ class VitalsWindow(Adw.ApplicationWindow):
     __gtype_name__ = "VitalsWindow"
 
     toast_overlay:      Adw.ToastOverlay = Gtk.Template.Child()
+    navigation_view:    Adw.NavigationView = Gtk.Template.Child()
     view_stack:         Adw.ViewStack    = Gtk.Template.Child()
     title_stack:        Gtk.Stack        = Gtk.Template.Child()
     view_switcher_bar:  Adw.ViewSwitcherBar = Gtk.Template.Child()
@@ -55,7 +56,7 @@ class VitalsWindow(Adw.ApplicationWindow):
         self._pages = {
             "dashboard": Dashboard(app.store, app.settings),
             "timeline": Timeline(app.store, app.catalog),
-            "devices": Devices(),
+            "devices": Devices(app.device_manager, app.ble),
         }
         self.dashboard_bin.set_child(self._pages["dashboard"])
         self.timeline_bin.set_child(self._pages["timeline"])
@@ -71,6 +72,9 @@ class VitalsWindow(Adw.ApplicationWindow):
         # data catch up lazily) and when new records land in the store.
         self.view_stack.connect("notify::visible-child", self._on_view_changed)
         app.record_bus.connect("records-changed", self._on_records_changed)
+        app.device_manager.connect(
+            "device-synced", lambda _m, _addr, msg: self.show_toast(msg))
+        self.connect("close-request", self._maybe_close_to_background)
         self.refresh()
 
     # ── Public API ────────────────────────────────────────────────
@@ -84,6 +88,14 @@ class VitalsWindow(Adw.ApplicationWindow):
         page = self._pages.get(self.view_stack.get_visible_child_name())
         if page is not None:
             page.refresh()
+
+    def push_device_detail(self, address: str) -> None:
+        from vitals.pages.device_detail import DeviceDetailPage
+        app = self.get_application()
+        self.navigation_view.push(DeviceDetailPage(app.device_manager, address))
+
+    def pop_device_detail(self) -> None:
+        self.navigation_view.pop_to_tag("main")
 
     # ── Internals ─────────────────────────────────────────────────
     def _on_records_changed(self, _bus, _types) -> None:
@@ -128,3 +140,11 @@ class VitalsWindow(Adw.ApplicationWindow):
             self._settings.set_int("window-height", self.get_height())
         self._settings.set_boolean("window-maximized", self.is_maximized())
         return False
+
+    def _maybe_close_to_background(self, *_):
+        if not self._settings.get_boolean("run-in-background"):
+            return False
+        # Hide instead of quitting so background syncs keep running.
+        self.get_application().hold_for_background()
+        self.set_visible(False)
+        return True

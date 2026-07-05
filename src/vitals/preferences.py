@@ -20,6 +20,27 @@ class VitalsPreferences(Adw.PreferencesDialog):
             "Daily water goal", "Millilitres per day (0 hides the goal)",
             "water-goal-ml", upper=10000, step=100, page=250))
 
+        sync = Adw.PreferencesGroup(title="Devices")
+        sync.add(self._switch_row(
+            "Sync time on connect",
+            "Push the host clock to a watch on every sync",
+            "sync-time-on-connect"))
+        interval = self._spin_row(
+            "Background sync interval",
+            "Minutes between automatic watch syncs (0 disables)",
+            "background-sync-interval", upper=1440, step=15, page=60)
+        sync.add(interval)
+        sync.add(self._switch_row(
+            "Run in background",
+            "Keep syncing when the window is closed",
+            "run-in-background"))
+        autostart = self._switch_row(
+            "Start at login",
+            "Launch in the background when you log in",
+            "autostart-enabled")
+        autostart.connect("notify::active", self._on_autostart)
+        sync.add(autostart)
+
         services = Adw.PreferencesGroup(
             title="Services",
             description="USDA FoodData Central adds restaurant and generic "
@@ -33,8 +54,22 @@ class VitalsPreferences(Adw.PreferencesDialog):
         services.add(key_row)
 
         page.add(group)
+        page.add(sync)
         page.add(services)
         self.add(page)
+
+    def _switch_row(self, title: str, subtitle: str, key: str) -> Adw.SwitchRow:
+        row = Adw.SwitchRow(title=title, subtitle=subtitle)
+        row.set_active(self._settings.get_boolean(key))
+        row.connect("notify::active",
+                    lambda r, _p: self._settings.set_boolean(key, r.get_active()))
+        return row
+
+    def _on_autostart(self, row, _param) -> None:
+        from vitals.background_portal import request_background
+        from vitals.const import APP_ID, APP_NAME
+        request_background(autostart=row.get_active(),
+                           app_id=APP_ID, app_name=APP_NAME)
 
     def _spin_row(self, title: str, subtitle: str, key: str,
                   upper: int, step: int, page: int) -> Adw.SpinRow:

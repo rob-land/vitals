@@ -6,9 +6,12 @@
   "command": "vitals",
   "finish-args": [
     "--share=ipc",
+    "--share=network",
     "--socket=fallback-x11",
     "--socket=wayland",
     "--device=dri",
+    "--system-talk-name=org.bluez",
+    "--filesystem=xdg-config/autostart:create",
     "--filesystem=xdg-data/pulse:ro",
     "--filesystem=~/.var/app/land.rob.pulse/data/pulse:ro"
   ],
