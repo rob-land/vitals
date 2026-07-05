@@ -45,6 +45,13 @@ class VitalsWindow(Adw.ApplicationWindow):
         help_action.connect("activate", self._show_help_overlay)
         self.add_action(help_action)
 
+        for name, opener in (("add-food", self._add_food),
+                             ("add-water", self._add_water),
+                             ("add-measurement", self._add_measurement)):
+            action = Gio.SimpleAction.new(name, None)
+            action.connect("activate", opener)
+            self.add_action(action)
+
         self._pages = {
             "dashboard": Dashboard(app.store, app.settings),
             "timeline": Timeline(app.store, app.catalog),
@@ -93,6 +100,21 @@ class VitalsWindow(Adw.ApplicationWindow):
 
     def _on_view_changed(self, *_):
         self.refresh()
+
+    def _add_food(self, *_):
+        from vitals.sources.food import FoodDialog
+        app = self.get_application()
+        FoodDialog(app.recorder, app.settings).present(self)
+
+    def _add_water(self, *_):
+        from vitals.sources.water import WaterDialog
+        app = self.get_application()
+        WaterDialog(app.recorder, app.settings).present(self)
+
+    def _add_measurement(self, *_):
+        from vitals.sources.measurements import MeasurementDialog
+        app = self.get_application()
+        MeasurementDialog(app.recorder, app.settings).present(self)
 
     def _show_help_overlay(self, *_):
         builder = Gtk.Builder.new_from_resource("/land/rob/vitals/ui/help-overlay.ui")

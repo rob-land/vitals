@@ -8,3 +8,7 @@ src/vitals/pages/dashboard.py
 src/vitals/pages/timeline.py
 src/vitals/pages/devices.py
 src/vitals/preferences.py
+src/vitals/sources/food.py
+src/vitals/sources/food_lookup.py
+src/vitals/sources/measurements.py
+src/vitals/sources/water.py

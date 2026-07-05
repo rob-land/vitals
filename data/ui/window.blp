@@ -41,6 +41,13 @@ template $VitalsWindow: Adw.ApplicationWindow {
             }
           };
 
+          [start]
+          MenuButton {
+            icon-name: "list-add-symbolic";
+            menu-model: add_menu;
+            tooltip-text: _("Add an Entry");
+          }
+
           [end]
           MenuButton {
             icon-name: "open-menu-symbolic";
@@ -81,6 +88,23 @@ template $VitalsWindow: Adw.ApplicationWindow {
       };
     };
   };
+}
+
+menu add_menu {
+  item {
+    label: _("Food…");
+    action: "win.add-food";
+  }
+
+  item {
+    label: _("Water…");
+    action: "win.add-water";
+  }
+
+  item {
+    label: _("Measurement…");
+    action: "win.add-measurement";
+  }
 }
 
 menu primary_menu {

@@ -55,6 +55,18 @@ python.install_sources(
   subdir: meson.project_name() / 'ingest',
 )
 
+python.install_sources(
+  files(
+    'sources/__init__.py',
+    'sources/food.py',
+    'sources/food_lookup.py',
+    'sources/measurements.py',
+    'sources/usda.py',
+    'sources/water.py',
+  ),
+  subdir: meson.project_name() / 'sources',
+)
+
 configure_file(
   input: 'const.py.in',
   output: 'const.py',

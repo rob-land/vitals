@@ -20,7 +20,20 @@ class VitalsPreferences(Adw.PreferencesDialog):
             "Daily water goal", "Millilitres per day (0 hides the goal)",
             "water-goal-ml", upper=10000, step=100, page=250))
 
+        services = Adw.PreferencesGroup(
+            title="Services",
+            description="USDA FoodData Central adds restaurant and generic "
+                        "foods to the lookup. The shared demo key is heavily "
+                        "rate-limited; a personal key is free.")
+        key_row = Adw.PasswordEntryRow(title="USDA API key")
+        key_row.set_text(settings.get_string("usda-api-key"))
+        key_row.connect(
+            "changed",
+            lambda row: settings.set_string("usda-api-key", row.get_text().strip()))
+        services.add(key_row)
+
         page.add(group)
+        page.add(services)
         self.add(page)
 
     def _spin_row(self, title: str, subtitle: str, key: str,
