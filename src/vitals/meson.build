@@ -100,6 +100,7 @@ python.install_sources(
   files(
     'core/__init__.py',
     'core/catalog.py',
+    'core/csv_export.py',
     'core/errors.py',
     'core/events.py',
     'core/migrate.py',

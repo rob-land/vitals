@@ -1,6 +1,6 @@
 project(
   'vitals',
-  version: '0.1.0',
+  version: '0.9.0',
   meson_version: '>= 1.0.0',
   license: 'GPL-3.0-or-later',
   default_options: ['warning_level=2'],

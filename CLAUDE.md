@@ -2,12 +2,15 @@
 
 ## What this project is
 
-Vitals is the GTK4 / libadwaita health dashboard for Pulse, the local-first
-health-data hub. It is a *view* client: it reads activity, vitals and trends
-from the `land.rob.pulse` daemon over D-Bus and renders them, and it owns
-the **consent UI** for granting apps access to each data type (via Pulse's
-`land.rob.pulse.Admin` interface). It is the companion to the headless
-`pulse` daemon and to `tock` (which feeds Pulse as a source).
+Vitals is the unified GTK4 / libadwaita health tracker — the merge of
+the former tock (watch sync), pulse (health-data hub), larder
+(food/water logging), jot (manual vitals) and gauge (BLE sensor
+bridge) apps into one. It owns the health database in-process (no
+D-Bus hub, no consent layer), syncs watches (Pebble, Bangle.js,
+PineTime) and standard-GATT health sensors through a pluggable device
+layer, and provides manual entry for food, water and measurements.
+Three views: Dashboard (charts), Timeline (day-grouped events),
+Devices (registry + per-device tools).
 
 App ID: `land.rob.vitals`. License: GPL-3.0-or-later.
 
@@ -15,59 +18,60 @@ App ID: `land.rob.vitals`. License: GPL-3.0-or-later.
 
 Well-structured, readable, idiomatic Python (PEP 8) and GNOME / libadwaita
 conventions; the cohort-shared [`STYLE_GUIDE.md`](STYLE_GUIDE.md) layers on
-top. This is a list-of-views (ViewStack) app, not list+detail, so it uses
-an `Adw.ViewStack` + `Adw.ViewSwitcher` shell with a breakpoint, per the
-style guide's adaptive-shell section.
+top. When existing code doesn't meet that bar, refactor rather than
+perpetuate the pattern.
+
+## Architecture (the short version)
+
+- `core/` — the former pulse daemon as an in-process library: type
+  catalog (`data/schema/record-types.yaml`), validation, SQLite store
+  (WAL, uuid-upsert, seq change feed), UCUM units, Vault replication,
+  CSV export, one-time pulse-DB adoption (`core/migrate.py`).
+- `ingest/` — every write goes through the one `Recorder`
+  (validate → insert → `RecordBus::records-changed`); `builders.py`
+  keeps the legacy `tock:` uuid scheme (load-bearing: adopted records
+  must upsert on re-sync, never duplicate).
+- `devices/` — plugin layer. `Device` ABC with capability flags;
+  `INTERACTION` separates session watches from opportunistic sensors;
+  `EXCLUSIVE_TRANSPORT` serializes one-per-process transports (Pebble
+  PPoGATT). Registry rows live in the `devices` table of health.db,
+  orchestrated by `DeviceManager`. See
+  [`docs/adding-a-device-plugin.md`](docs/adding-a-device-plugin.md).
+- `ble/` — one asyncio loop on a worker thread (`BleManager`), one
+  shared `BleakScanner` (`ScanBroker`). SQLite is main-thread-only;
+  BLE code marshals via `GLib.idle_add` (the Recorder does this).
+- `sources/` — manual-entry dialogs (food + OFF/USDA lookup, water,
+  measurements). Food writes `nutrient_intake` **plus** a companion
+  `dietary_energy` scalar so calorie aggregates work; the Timeline
+  hides the companion.
+- `pages/`, `widgets/` — the three views and the Cairo chart set
+  (ring/bar/line + grouped bars; ACCENT blue = activity, ACCENT2
+  orange #D97706 = intake, pair is CVD-validated).
 
 ## Tech stack
 
 - **Python 3.10+**, GTK4 + libadwaita (PyGObject), Blueprint `.blp` → `.ui`
   bundled via GResource. Meson + Ninja; Flatpak (GNOME 50).
-- **No pip dependencies** — `gi`/GTK/Adw come from the runtime; `build-all.sh`
-  skips the python3-deps step and the manifest omits it.
-- **D-Bus**: GDBus (`Gio.DBusConnection`), synchronous calls on the main
-  loop — local Pulse round-trips are sub-millisecond, so a dashboard refresh
-  calls them directly (no worker thread). All wrapped in `pulse_client.py`.
+- **pip deps**: PyYAML (catalog), bleak (BLE); dbus_fast rides along for
+  the Pebble transport. Bundled via `build-aux/flatpak/python3-deps.json`.
+- **BlueZ**: bleak for Bangle/PineTime/sensors; dbus_fast GATT *server*
+  for Pebble (needs bluetoothd `Experimental = true` on the host).
 
-## Source layout
+## Before making changes
 
-```
-src/vitals/
-  main.py / __main__.py    entry point (launcher loads the GResource first)
-  application.py           VitalsApplication (Adw.Application)
-  window.py                VitalsWindow — the adaptive shell, hosts 3 pages
-  pulse_client.py          PulseClient: Health (read) + Admin (consent)
-  format.py                pure formatting + nice_max axis scaling (tested)
-  logging_setup.py         rotating-file logging (VITALS_DEBUG / --debug)
-  pages/                   PulsePage base + today / trends / permissions
-  widgets/charts.py        ActivityRing + BarChart (Cairo DrawingAreas)
-data/ui/                   window.blp, help-overlay.blp, gresource.xml
-data/                      .desktop / .metainfo / .gschema / icons
-```
+- Every new `src/vitals/**/*.py` MUST be listed in
+  `src/vitals/meson.build` (and `.blp` in `data/ui/meson.build`) or it
+  silently never ships — `tests/test_packaging.py` enforces this.
+- UI lives in `data/ui/*.blp` for templates; ported tock dialogs are
+  imperative and may stay so until touched.
+- `gi.require_version` is declared once in `src/vitals/vitals.in`;
+  sub-modules just `from gi.repository import …`.
+- Run `python3 -m pytest tests/` (no hardware needed) and
+  `python3 ~/projects/style-check.py` before committing.
 
-## Key conventions
+## Hardware verification
 
-- **Pages** subclass `PulsePage`: a Stack that swaps real content with a
-  shared "Pulse isn't running" status page. Each page has a `refresh()` the
-  window calls when that page becomes visible (lazy — only the visible page
-  pulls data).
-- **Consent**: Vitals manages grants through Pulse's `Admin` interface
-  (owner-only). Vitals itself needs a read grant to display data; the
-  Permissions page is how the user gives it (and authorises sources like
-  Tock). A future Pulse portal will let apps *request* access and surface it
-  here as a prompt.
-- **Drawing**: charts are plain `Gtk.DrawingArea`s; the data prep
-  (`nice_max`, formatting) lives in `format.py` and is unit-tested, the
-  widgets only draw.
-- **gettext** only in `.blp` (`_()` / `C_()`); Python uses plain strings,
-  matching the cohort.
-
-## Things to watch out for
-
-- Window template ids in `window.blp` must match the `Gtk.Template.Child`
-  names in `window.py` (`toast_overlay`, `view_stack`, `title_stack`,
-  `view_switcher_bar`, `today_bin`, `trends_bin`, `permissions_bin`).
-- The ViewStack's visible child is the `Adw.Bin`, not the page widget inside
-  it — `window.refresh()` dispatches by page name, not by the visible child.
-- ViewStackPage `icon-name`s are stock symbolic icons; a missing one
-  degrades to blank, it doesn't crash.
+Protocol logic is unit-tested against captures, but BlueZ GATT-server
+registration, Pebble sync/flash, Bangle DFU and live sensor readings
+need the FLX1s phone + real devices. Verify on-device before retiring
+the corresponding legacy app (tock / gauge / pulse / larder / jot).

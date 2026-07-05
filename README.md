@@ -1,25 +1,36 @@
 # Vitals
 
-**The health dashboard for Pulse.**
+**One local-first health tracker.**
 
-Vitals is a native GTK4 / libadwaita app that shows the health and fitness
-data in your local [Pulse](../pulse) hub — and it is where you control
-which apps may read or write each kind of data. It's a *view* on the Pulse
-store, talking to the `land.rob.pulse` daemon over D-Bus. No account, no
-cloud; your data stays on your device.
+Vitals is a native GTK4 / libadwaita app that syncs smartwatches
+(Pebble, Bangle.js, PineTime) and standard Bluetooth health sensors
+(blood-pressure cuffs, scales, glucose meters, pulse oximeters,
+thermometers), and logs food, water and measurements by hand — all
+into one on-device SQLite database. No account, no cloud; optionally
+replicate the change feed to your own [Vault](../vault) server.
 
-It's adaptive: the same binary works on a desktop and on a Phosh / Plasma
-Mobile phone.
+It is the unification of five earlier apps — tock (watch sync), pulse
+(health-data hub daemon), larder (food/water), jot (manual vitals) and
+gauge (sensor bridge) — into a single codebase with a pluggable device
+layer. On first run it adopts the existing Pulse database, history and
+all.
 
-## Status
+It's adaptive: the same binary works on a desktop and on a Phosh /
+Plasma Mobile phone.
 
-**v0.1.** Three views over Pulse:
+## Views
 
-- **Today** — a steps-toward-goal activity ring and your latest vital signs.
-- **Trends** — a daily chart of any scalar metric over time.
-- **Permissions** — grant or revoke each app's access, per data type. This
-  is the consent UI: authorising a source like Tock is a dialog, not a
-  `gdbus` call.
+- **Dashboard** — steps ring and week, calories eaten vs burned, water,
+  weight trend, heart rate, last sleep.
+- **Timeline** — everything you logged, newest first, grouped by day
+  (with each day's step total in the header).
+- **Devices** — pair watches and sensors; per-device tools appear by
+  capability: sync, firmware update, app/watchface store, alarms,
+  weather push.
+
+Manual entry lives behind the header's **+**: food (with Open Food
+Facts and USDA FoodData Central lookup), water quick-add, and
+measurements (weight, blood pressure, glucose, and more).
 
 ## Build & run
 
@@ -27,24 +38,33 @@ Mobile phone.
 meson setup _build --prefix=/usr/local
 meson install -C _build
 
-vitals        # launches the dashboard (needs the pulse daemon running)
+vitals               # the app
+vitals --background  # headless (autostart uses this)
 ```
 
-Vitals must be granted **read** access in its own Permissions page before
-Today/Trends show data (Pulse filters reads by grant). The Permissions page
-itself always works — it manages grants through the Pulse `Admin` interface.
+Tests need no hardware:
+
+```sh
+python3 -m pytest tests/
+```
+
+The Pebble transport hosts a BLE GATT server, which requires
+`Experimental = true` in `/etc/bluetooth/main.conf` on the host.
 
 ## Layout
 
 ```
 src/vitals/
-  application.py    Adw.Application
-  window.py         adaptive shell (ViewStack + ViewSwitcher + breakpoint)
-  pulse_client.py   GDBus client for land.rob.pulse (Health + Admin)
-  format.py         pure value-formatting + chart scaling
-  pages/            today.py · trends.py · permissions.py
-  widgets/charts.py ActivityRing + BarChart (Cairo)
-data/ui/            *.blp Blueprint templates → GResource
+  core/       catalog, store, units, replication, adoption (ex-pulse)
+  ingest/     Recorder + envelope builders (the single write path)
+  ble/        BLE worker loop, adapter monitor, shared scanner
+  devices/    Device ABC + DeviceManager; pebble/, bangle, pinetime,
+              sensors/ plugins
+  sources/    manual-entry dialogs (food / water / measurements)
+  pages/      dashboard, timeline, devices, device detail
+  widgets/    Cairo charts
+data/schema/  record-types.yaml + SQL migrations
+docs/         adding-a-device-plugin.md and friends
 ```
 
 ## License

@@ -62,7 +62,88 @@ class VitalsPreferences(Adw.PreferencesDialog):
         page.add(sync)
         page.add(self._weather_group())
         page.add(services)
+        page.add(self._data_group())
         self.add(page)
+
+    # ── Data group (Vault replication + export) ───────────────────
+    def _data_group(self) -> Adw.PreferencesGroup:
+        group = Adw.PreferencesGroup(
+            title="Data",
+            description="Your health data lives on this device; replication "
+                        "pushes changes to your own Vault server.")
+
+        url = Adw.EntryRow(title="Vault server URL")
+        url.set_text(self._settings.get_string("vault-url"))
+        url.connect("changed",
+                    lambda row: self._settings.set_string(
+                        "vault-url", row.get_text().strip()))
+        group.add(url)
+
+        replicate = Adw.ButtonRow(title="Replicate Now")
+        replicate.set_start_icon_name("emblem-synchronizing-symbolic")
+        replicate.connect("activated", self._on_replicate)
+        group.add(replicate)
+
+        export = Adw.ButtonRow(title="Export All Data as CSV…")
+        export.set_start_icon_name("document-save-symbolic")
+        export.connect("activated", self._on_export)
+        group.add(export)
+        return group
+
+    def _on_replicate(self, *_):
+        url = self._settings.get_string("vault-url")
+        if not url:
+            self.add_toast(Adw.Toast.new("Set the Vault server URL first"))
+            return
+
+        def work():
+            # Worker thread: sqlite connections are thread-affine, so
+            # replication opens its own (the store's stays on the main
+            # thread).
+            from vitals.core import replicate, resources
+            from vitals.core.store import Store
+            store = Store(str(resources.db_path()))
+            try:
+                before = replicate.read_cursor()
+                cursor = replicate.replicate(
+                    store, replicate._http_post(url), before)
+                replicate.write_cursor(cursor)
+                message = ("Replication up to date" if cursor == before
+                           else f"Replicated to seq {cursor}")
+            except Exception as exc:
+                log.exception("replication failed")
+                message = f"Replication failed: {exc}"
+            finally:
+                store.close()
+            GLib.idle_add(lambda: self.add_toast(Adw.Toast.new(message)))
+
+        threading.Thread(target=work, name="vitals-replicate",
+                         daemon=True).start()
+
+    def _on_export(self, *_):
+        dialog = Gtk.FileDialog(initial_name="vitals-export.csv")
+        dialog.save(self.get_root(), None, self._on_export_chosen)
+
+    def _on_export_chosen(self, dialog, result) -> None:
+        try:
+            gfile = dialog.save_finish(result)
+        except GLib.Error:
+            return  # cancelled
+        path = gfile.get_path()
+
+        def work():
+            from vitals.core import resources
+            from vitals.core.csv_export import export_to_path
+            try:
+                count = export_to_path(str(resources.db_path()), path)
+                message = f"Exported {count:,} records"
+            except Exception as exc:
+                log.exception("csv export failed")
+                message = f"Export failed: {exc}"
+            GLib.idle_add(lambda: self.add_toast(Adw.Toast.new(message)))
+
+        threading.Thread(target=work, name="vitals-export",
+                         daemon=True).start()
 
     # ── Weather group (Pebble forecast push) ──────────────────────
     def _weather_group(self) -> Adw.PreferencesGroup:

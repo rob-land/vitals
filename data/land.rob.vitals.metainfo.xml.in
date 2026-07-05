@@ -5,24 +5,24 @@
   <project_license>GPL-3.0-or-later</project_license>
 
   <name>Vitals</name>
-  <summary>Health dashboard for the Pulse hub</summary>
+  <summary>Track health from watches, sensors and manual logs</summary>
 
   <description>
     <p>
-      Vitals is the native GNOME dashboard for Pulse, the local-first
-      health-data hub. It shows your activity, vital signs and trends —
-      and it is where you control which apps may read or write each kind
-      of health data.
-    </p>
-    <p>
-      All data stays on your device in the Pulse store; Vitals is just a
-      view onto it, talking to the Pulse daemon over D-Bus. No account, no
-      cloud.
+      Vitals is a local-first health tracker: it syncs smartwatches
+      (Pebble, Bangle.js, PineTime) and standard Bluetooth health
+      sensors (blood-pressure cuffs, scales, glucose meters, pulse
+      oximeters, thermometers), and logs food, water and measurements
+      by hand. Everything lands in one on-device database. No account,
+      no cloud — optionally replicate to your own Vault server.
     </p>
     <ul>
-      <li>Today: activity rings and your latest vital signs</li>
-      <li>Trends: per-metric charts over time</li>
-      <li>Permissions: grant or revoke each app's access, per data type</li>
+      <li>Dashboard: steps, calories eaten vs burned, water, weight,
+      heart rate and sleep at a glance</li>
+      <li>Timeline: everything you logged, day by day</li>
+      <li>Devices: pair watches and sensors, sync, install watch apps
+      and firmware, manage alarms and weather</li>
+      <li>Food lookup via Open Food Facts and USDA FoodData Central</li>
       <li>Adaptive layout for desktop GNOME and Phosh phones</li>
     </ul>
   </description>
@@ -39,6 +39,13 @@
   <content_rating type="oars-1.1"/>
 
   <releases>
+    <release version="0.9.0" date="2026-07-05">
+      <description>
+        <p>The unification: tock, pulse, larder, jot and gauge merge
+        into one app. Adopts the existing Pulse database on first run;
+        watch hardware flows await on-device verification.</p>
+      </description>
+    </release>
     <release version="0.1.0" date="2026-06-03">
       <description>
         <p>First release: Today, Trends and Permissions views over Pulse.</p>

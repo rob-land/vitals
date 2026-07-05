@@ -63,6 +63,11 @@
       <default>"celsius"</default>
       <summary>Temperature unit for weather: "celsius" or "fahrenheit"</summary>
     </key>
+    <key name="vault-url" type="s">
+      <default>""</default>
+      <summary>Vault sync-server base URL for replication</summary>
+      <description>When set, "Replicate now" pushes the change feed to this self-hosted Vault server; empty disables replication.</description>
+    </key>
     <key name="usda-api-key" type="s">
       <default>""</default>
       <summary>USDA FoodData Central API key</summary>
