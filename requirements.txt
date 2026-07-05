@@ -1,3 +1,3 @@
 # Runtime dependencies. PyGObject (the `gi` bindings), GTK4 and libadwaita
-# are provided by the GNOME platform / runtime, not pinned here. Vitals
-# talks to the Pulse daemon over D-Bus (GDBus) and needs nothing else.
+# are provided by the GNOME platform / runtime, not pinned here.
+PyYAML>=6.0

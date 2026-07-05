@@ -4,6 +4,7 @@ data/ui/window.blp
 data/ui/help-overlay.blp
 src/vitals/application.py
 src/vitals/window.py
-src/vitals/pages/today.py
-src/vitals/pages/trends.py
-src/vitals/pages/permissions.py
+src/vitals/pages/dashboard.py
+src/vitals/pages/timeline.py
+src/vitals/pages/devices.py
+src/vitals/preferences.py

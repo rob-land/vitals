@@ -1,37 +1,38 @@
-"""Dashboard pages and their shared base.
+"""The main views and their shared helpers.
 
-``PulsePage`` is a vertical box wrapping a Stack that swaps between the
-page's real content and a shared "Pulse isn't running" status screen, so
-every page degrades the same way when the daemon is unreachable.
+Pages are plain boxes over the in-process store; each implements
+``refresh()`` and the window calls it when the page becomes visible or
+when the RecordBus reports new records.
 """
 
 from __future__ import annotations
 
-from gi.repository import Adw, GLib, Gtk
+from datetime import datetime, timedelta
+
+from gi.repository import GLib, Gtk
 
 
-class PulsePage(Gtk.Box):
+class Page(Gtk.Box):
     def __init__(self):
         super().__init__(orientation=Gtk.Orientation.VERTICAL)
-        self._stack = Gtk.Stack(
-            vexpand=True, hexpand=True,
-            transition_type=Gtk.StackTransitionType.CROSSFADE)
-        self.append(self._stack)
-        self._stack.add_named(
-            Adw.StatusPage(
-                icon_name="network-offline-symbolic",
-                title="Pulse isn’t running",
-                description="Start the Pulse daemon to view your health data."),
-            "unavailable")
 
-    def _set_content(self, widget: Gtk.Widget) -> None:
-        self._stack.add_named(widget, "content")
-
-    def _show_content(self) -> None:
-        self._stack.set_visible_child_name("content")
-
-    def _show_unavailable(self) -> None:
-        self._stack.set_visible_child_name("unavailable")
+    def refresh(self) -> None:  # pragma: no cover - overridden
+        raise NotImplementedError
 
     def _toast(self, message: str) -> None:
         self.activate_action("win.toast", GLib.Variant("s", message))
+
+
+def local_tz_name() -> str:
+    """IANA name of the local zone for the store's bucketed aggregates."""
+    return GLib.TimeZone.new_local().get_identifier()
+
+
+def local_day_start(days_back: int = 0) -> datetime:
+    midnight = datetime.now().astimezone().replace(
+        hour=0, minute=0, second=0, microsecond=0)
+    return midnight - timedelta(days=days_back)
+
+
+def to_ms(dt: datetime) -> int:
+    return round(dt.timestamp() * 1000)

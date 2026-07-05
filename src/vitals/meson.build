@@ -6,7 +6,6 @@ python.install_sources(
     'application.py',
     'window.py',
     'preferences.py',
-    'pulse_client.py',
     'format.py',
     'logging_setup.py',
   ),
@@ -16,9 +15,9 @@ python.install_sources(
 python.install_sources(
   files(
     'pages/__init__.py',
-    'pages/today.py',
-    'pages/trends.py',
-    'pages/permissions.py',
+    'pages/dashboard.py',
+    'pages/timeline.py',
+    'pages/devices.py',
   ),
   subdir: meson.project_name() / 'pages',
 )

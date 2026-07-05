@@ -1,4 +1,4 @@
-"""Vitals — Adw.Application subclass."""
+"""Vitals — Adw.Application subclass owning the in-process health core."""
 
 from __future__ import annotations
 
@@ -7,7 +7,11 @@ import logging
 from gi.repository import Adw, Gio, GLib, Gtk
 
 from vitals.const import APP_ID, APP_NAME, VERSION
-from vitals.pulse_client import PulseClient
+from vitals.core import migrate, resources
+from vitals.core.catalog import Catalog
+from vitals.core.events import RecordBus
+from vitals.core.store import Store
+from vitals.ingest import Recorder
 from vitals.window import VitalsWindow
 
 log = logging.getLogger(__name__)
@@ -17,8 +21,12 @@ class VitalsApplication(Adw.Application):
     def __init__(self):
         super().__init__(application_id=APP_ID,
                          flags=Gio.ApplicationFlags.DEFAULT_FLAGS)
-        self._settings = Gio.Settings.new(APP_ID)
-        self._client = PulseClient()
+        self.settings = Gio.Settings.new(APP_ID)
+        self.store: Store | None = None
+        self.catalog: Catalog | None = None
+        self.record_bus = RecordBus()
+        self.recorder: Recorder | None = None
+        self._adoption: dict | None = None
 
         # Registered so --help lists it and Gio accepts it; the actual
         # level is read from sys.argv by configure_logging().
@@ -42,13 +50,39 @@ class VitalsApplication(Adw.Application):
         self.add_action(action)
         return action
 
+    # ── lifecycle ─────────────────────────────────────────────────
+    def do_startup(self):
+        Adw.Application.do_startup(self)
+        # First run on a machine with a pulse database: adopt it before
+        # the store creates a fresh one (no-op in every other case).
+        try:
+            self._adoption = migrate.adopt()
+        except Exception:
+            log.exception("pulse database adoption failed; starting fresh")
+            self._adoption = None
+        resources.db_path().parent.mkdir(parents=True, exist_ok=True)
+        self.store = Store(str(resources.db_path()))
+        self.store.migrate()
+        self.catalog = Catalog.load()
+        self.recorder = Recorder(self.store, self.catalog, self.record_bus)
+
+    def do_shutdown(self):
+        if self.store is not None:
+            self.store.close()
+        Adw.Application.do_shutdown(self)
+
     def do_activate(self):
         win = self.props.active_window
         if win is None:
-            win = VitalsWindow(application=self, settings=self._settings,
-                               client=self._client)
+            win = VitalsWindow(application=self)
+            if self._adoption and self._adoption.get("adopted"):
+                win.show_toast(
+                    f"Imported {self._adoption['records']:,} records from "
+                    "Pulse — the retiring apps no longer feed this data")
+                self._adoption = None
         win.present()
 
+    # ── actions ───────────────────────────────────────────────────
     def _refresh(self, *_):
         win = self.props.active_window
         if win is not None:
@@ -58,7 +92,7 @@ class VitalsApplication(Adw.Application):
         from vitals.preferences import VitalsPreferences
         win = self.props.active_window
         if win is not None:
-            VitalsPreferences(self._settings).present(win)
+            VitalsPreferences(self.settings).present(win)
 
     def _show_about(self, *_):
         about = Adw.AboutDialog(
@@ -67,7 +101,7 @@ class VitalsApplication(Adw.Application):
             version=VERSION,
             license_type=Gtk.License.GPL_3_0,
             developer_name="Rob Daniel",
-            comments="Health dashboard for the Pulse hub.",
+            comments="Health tracking for watches, sensors and manual logs.",
             website="https://codeberg.org/robland/vitals",
             issue_url="https://codeberg.org/robland/vitals/issues",
         )

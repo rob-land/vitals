@@ -9,7 +9,8 @@
     "--socket=fallback-x11",
     "--socket=wayland",
     "--device=dri",
-    "--talk-name=land.rob.pulse"
+    "--filesystem=xdg-data/pulse:ro",
+    "--filesystem=~/.var/app/land.rob.pulse/data/pulse:ro"
   ],
   "cleanup": [
     "/include",
@@ -33,6 +34,7 @@
         }
       ]
     },
+    "python3-deps.json",
     {
       "name": "vitals",
       "buildsystem": "meson",

@@ -6,12 +6,13 @@ import logging
 
 from gi.repository import Adw, Gio, GLib, Gtk
 
-from vitals.pages.permissions import PermissionsPage
-from vitals.pages.today import TodayPage
-from vitals.pages.trends import TrendsPage
-from vitals.pulse_client import PulseClient
+from vitals.pages.dashboard import Dashboard
+from vitals.pages.devices import Devices
+from vitals.pages.timeline import Timeline
 
 log = logging.getLogger(__name__)
+
+_REFRESH_DEBOUNCE_MS = 300
 
 
 @Gtk.Template(resource_path="/land/rob/vitals/ui/window.ui")
@@ -22,14 +23,15 @@ class VitalsWindow(Adw.ApplicationWindow):
     view_stack:         Adw.ViewStack    = Gtk.Template.Child()
     title_stack:        Gtk.Stack        = Gtk.Template.Child()
     view_switcher_bar:  Adw.ViewSwitcherBar = Gtk.Template.Child()
-    today_bin:          Adw.Bin          = Gtk.Template.Child()
-    trends_bin:         Adw.Bin          = Gtk.Template.Child()
-    permissions_bin:    Adw.Bin          = Gtk.Template.Child()
+    dashboard_bin:      Adw.Bin          = Gtk.Template.Child()
+    timeline_bin:       Adw.Bin          = Gtk.Template.Child()
+    devices_bin:        Adw.Bin          = Gtk.Template.Child()
 
-    def __init__(self, *, settings: Gio.Settings, client: PulseClient, **kwargs):
-        super().__init__(**kwargs)
-        self._settings = settings
-        self._client = client
+    def __init__(self, *, application, **kwargs):
+        super().__init__(application=application, **kwargs)
+        app = application
+        self._settings = app.settings
+        self._refresh_pending = 0
 
         # Suite-standard window action: any child can fire a toast via
         # widget.activate_action("win.toast", GLib.Variant("s", msg)).
@@ -43,25 +45,25 @@ class VitalsWindow(Adw.ApplicationWindow):
         help_action.connect("activate", self._show_help_overlay)
         self.add_action(help_action)
 
-        self._today = TodayPage(self._client, self._settings)
-        self._trends = TrendsPage(self._client, self._settings)
-        self._permissions = PermissionsPage(self._client)
-        self.today_bin.set_child(self._today)
-        self.trends_bin.set_child(self._trends)
-        self.permissions_bin.set_child(self._permissions)
+        self._pages = {
+            "dashboard": Dashboard(app.store, app.settings),
+            "timeline": Timeline(app.store, app.catalog),
+            "devices": Devices(),
+        }
+        self.dashboard_bin.set_child(self._pages["dashboard"])
+        self.timeline_bin.set_child(self._pages["timeline"])
+        self.devices_bin.set_child(self._pages["devices"])
 
-        self.set_default_size(
-            settings.get_int("window-width"), settings.get_int("window-height"))
-        if settings.get_boolean("window-maximized"):
+        self.set_default_size(self._settings.get_int("window-width"),
+                              self._settings.get_int("window-height"))
+        if self._settings.get_boolean("window-maximized"):
             self.maximize()
         self.connect("close-request", self._on_close_request)
 
-        # Refresh the visible page when the user switches views, so we
-        # don't pull every page's data up front.
+        # Refresh the visible page on tab switch (pages showing stale
+        # data catch up lazily) and when new records land in the store.
         self.view_stack.connect("notify::visible-child", self._on_view_changed)
-        # Reflect preference changes (step goal, trends window) immediately.
-        for key in ("daily-step-goal", "trends-days"):
-            settings.connect(f"changed::{key}", lambda *_: self.refresh())
+        app.record_bus.connect("records-changed", self._on_records_changed)
         self.refresh()
 
     # ── Public API ────────────────────────────────────────────────
@@ -71,14 +73,24 @@ class VitalsWindow(Adw.ApplicationWindow):
         self.toast_overlay.add_toast(toast)
 
     def refresh(self) -> None:
-        """Reload the currently visible page from Pulse."""
-        pages = {"today": self._today, "trends": self._trends,
-                 "permissions": self._permissions}
-        page = pages.get(self.view_stack.get_visible_child_name())
+        """Reload the currently visible page from the store."""
+        page = self._pages.get(self.view_stack.get_visible_child_name())
         if page is not None:
             page.refresh()
 
     # ── Internals ─────────────────────────────────────────────────
+    def _on_records_changed(self, _bus, _types) -> None:
+        # Debounce: a sync drains hundreds of batches back to back.
+        if self._refresh_pending:
+            GLib.source_remove(self._refresh_pending)
+        self._refresh_pending = GLib.timeout_add(
+            _REFRESH_DEBOUNCE_MS, self._debounced_refresh)
+
+    def _debounced_refresh(self) -> bool:
+        self._refresh_pending = 0
+        self.refresh()
+        return GLib.SOURCE_REMOVE
+
     def _on_view_changed(self, *_):
         self.refresh()
 

@@ -1,5 +1,8 @@
-"""Reusable drawing widgets shared across the dashboard pages."""
+"""Reusable drawing widgets shared across the pages."""
 
-from vitals.widgets.charts import ActivityRing, BarChart, LineChart
+from vitals.widgets.charts import (
+    ACCENT, ACCENT2, ActivityRing, BarChart, GroupedBarChart, LegendDot,
+    LineChart)
 
-__all__ = ["ActivityRing", "BarChart", "LineChart"]
+__all__ = ["ACCENT", "ACCENT2", "ActivityRing", "BarChart",
+           "GroupedBarChart", "LegendDot", "LineChart"]

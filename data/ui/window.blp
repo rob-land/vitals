@@ -52,24 +52,24 @@ template $VitalsWindow: Adw.ApplicationWindow {
 
         content: Adw.ViewStack view_stack {
           Adw.ViewStackPage {
-            name: "today";
-            title: _("Today");
+            name: "dashboard";
+            title: _("Dashboard");
             icon-name: "go-home-symbolic";
-            child: Adw.Bin today_bin {};
+            child: Adw.Bin dashboard_bin {};
           }
 
           Adw.ViewStackPage {
-            name: "trends";
-            title: _("Trends");
-            icon-name: "histogram-symbolic";
-            child: Adw.Bin trends_bin {};
+            name: "timeline";
+            title: _("Timeline");
+            icon-name: "document-open-recent-symbolic";
+            child: Adw.Bin timeline_bin {};
           }
 
           Adw.ViewStackPage {
-            name: "permissions";
-            title: _("Permissions");
-            icon-name: "dialog-password-symbolic";
-            child: Adw.Bin permissions_bin {};
+            name: "devices";
+            title: _("Devices");
+            icon-name: "bluetooth-symbolic";
+            child: Adw.Bin devices_bin {};
           }
         };
 

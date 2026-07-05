@@ -1,4 +1,4 @@
-"""Vitals preferences — dashboard settings (step goal, trends window)."""
+"""Vitals preferences — daily goals for the dashboard rings."""
 
 from __future__ import annotations
 
@@ -11,31 +11,25 @@ class VitalsPreferences(Adw.PreferencesDialog):
         self._settings = settings
 
         page = Adw.PreferencesPage()
-        group = Adw.PreferencesGroup(title="Dashboard")
+        group = Adw.PreferencesGroup(title="Goals")
 
-        self._goal = Adw.SpinRow(
-            title="Daily step goal",
-            subtitle="Target for the Today ring (0 hides the goal)",
-            adjustment=Gtk.Adjustment(lower=0, upper=100000,
-                                      step_increment=500, page_increment=1000))
-        self._goal.set_value(settings.get_int("daily-step-goal"))
-        self._goal.connect("notify::value", self._on_goal)
+        group.add(self._spin_row(
+            "Daily step goal", "Target for the steps ring (0 hides the goal)",
+            "daily-step-goal", upper=100000, step=500, page=1000))
+        group.add(self._spin_row(
+            "Daily water goal", "Millilitres per day (0 hides the goal)",
+            "water-goal-ml", upper=10000, step=100, page=250))
 
-        self._days = Adw.SpinRow(
-            title="Trends window",
-            subtitle="Days shown on the Trends chart",
-            adjustment=Gtk.Adjustment(lower=7, upper=90,
-                                      step_increment=1, page_increment=7))
-        self._days.set_value(settings.get_int("trends-days"))
-        self._days.connect("notify::value", self._on_days)
-
-        group.add(self._goal)
-        group.add(self._days)
         page.add(group)
         self.add(page)
 
-    def _on_goal(self, row, _param):
-        self._settings.set_int("daily-step-goal", int(row.get_value()))
-
-    def _on_days(self, row, _param):
-        self._settings.set_int("trends-days", int(row.get_value()))
+    def _spin_row(self, title: str, subtitle: str, key: str,
+                  upper: int, step: int, page: int) -> Adw.SpinRow:
+        row = Adw.SpinRow(
+            title=title, subtitle=subtitle,
+            adjustment=Gtk.Adjustment(lower=0, upper=upper,
+                                      step_increment=step, page_increment=page))
+        row.set_value(self._settings.get_int(key))
+        row.connect("notify::value",
+                    lambda r, _p: self._settings.set_int(key, int(r.get_value())))
+        return row
