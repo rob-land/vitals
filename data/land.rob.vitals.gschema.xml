@@ -42,6 +42,27 @@
       <default>false</default>
       <summary>Start in the background at login (via the portal)</summary>
     </key>
+    <key name="weather-enabled" type="b">
+      <default>false</default>
+      <summary>Send a weather forecast to the watch on each sync</summary>
+      <description>When enabled (and a location is set), Vitals fetches a forecast from Open-Meteo and stores it in the watch's weather database so the built-in Weather app can show it.</description>
+    </key>
+    <key name="weather-location-name" type="s">
+      <default>""</default>
+      <summary>Display name of the configured weather location</summary>
+    </key>
+    <key name="weather-latitude" type="d">
+      <default>0</default>
+      <summary>Latitude of the configured weather location</summary>
+    </key>
+    <key name="weather-longitude" type="d">
+      <default>0</default>
+      <summary>Longitude of the configured weather location</summary>
+    </key>
+    <key name="weather-units" type="s">
+      <default>"celsius"</default>
+      <summary>Temperature unit for weather: "celsius" or "fahrenheit"</summary>
+    </key>
     <key name="usda-api-key" type="s">
       <default>""</default>
       <summary>USDA FoodData Central API key</summary>

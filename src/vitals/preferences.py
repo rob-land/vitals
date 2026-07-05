@@ -1,8 +1,13 @@
-"""Vitals preferences — daily goals for the dashboard rings."""
+"""Vitals preferences — goals, device sync, weather and services."""
 
 from __future__ import annotations
 
-from gi.repository import Adw, Gio, Gtk
+import logging
+import threading
+
+from gi.repository import Adw, Gio, GLib, Gtk
+
+log = logging.getLogger(__name__)
 
 
 class VitalsPreferences(Adw.PreferencesDialog):
@@ -55,8 +60,72 @@ class VitalsPreferences(Adw.PreferencesDialog):
 
         page.add(group)
         page.add(sync)
+        page.add(self._weather_group())
         page.add(services)
         self.add(page)
+
+    # ── Weather group (Pebble forecast push) ──────────────────────
+    def _weather_group(self) -> Adw.PreferencesGroup:
+        group = Adw.PreferencesGroup(
+            title="Weather",
+            description="Send a forecast to the watch's Weather app, via "
+                        "Open-Meteo (no account needed).")
+
+        enable = Adw.SwitchRow(title="Weather sync",
+                               subtitle="Update the forecast on every sync")
+        self._settings.bind("weather-enabled", enable, "active",
+                            Gio.SettingsBindFlags.DEFAULT)
+        group.add(enable)
+
+        self._weather_loc = Adw.EntryRow(title="Location")
+        self._weather_loc.set_text(
+            self._settings.get_string("weather-location-name"))
+        self._weather_loc.set_show_apply_button(True)
+        self._weather_loc.connect("apply", self._on_weather_location_apply)
+        group.add(self._weather_loc)
+
+        units = Adw.ComboRow(title="Temperature units",
+                             subtitle="Match what your watch shows")
+        units.set_model(Gtk.StringList.new(["Celsius (°C)", "Fahrenheit (°F)"]))
+        units.set_selected(
+            1 if self._settings.get_string("weather-units") == "fahrenheit"
+            else 0)
+        units.connect(
+            "notify::selected",
+            lambda r, _: self._settings.set_string(
+                "weather-units",
+                "fahrenheit" if r.get_selected() == 1 else "celsius"))
+        group.add(units)
+        return group
+
+    def _on_weather_location_apply(self, row: Adw.EntryRow) -> None:
+        query = row.get_text().strip()
+        if not query:
+            return
+
+        def work():
+            from vitals.devices import weather as weather_mod
+            try:
+                results = weather_mod.geocode(query)
+            except Exception:
+                log.exception("weather: geocode failed")
+                results = []
+            GLib.idle_add(self._weather_located,
+                          results[0] if results else None)
+
+        threading.Thread(target=work, name="vitals-geocode",
+                         daemon=True).start()
+
+    def _weather_located(self, result) -> bool:
+        if result is None:
+            self.add_toast(Adw.Toast.new("Couldn’t find that location"))
+            return False
+        self._settings.set_string("weather-location-name", result.name)
+        self._settings.set_double("weather-latitude", result.latitude)
+        self._settings.set_double("weather-longitude", result.longitude)
+        self._weather_loc.set_text(result.name)
+        self.add_toast(Adw.Toast.new(f"Weather location: {result.name}"))
+        return False
 
     def _switch_row(self, title: str, subtitle: str, key: str) -> Adw.SwitchRow:
         row = Adw.SwitchRow(title=title, subtitle=subtitle)

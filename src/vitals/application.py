@@ -103,7 +103,25 @@ class VitalsApplication(Adw.Application):
             self.hold_for_background()
         else:
             self.activate()
+            self._maybe_open_pbw(command_line)
         return 0
+
+    def _maybe_open_pbw(self, command_line) -> None:
+        """Launched with a .pbw (Pebble app bundle, opened via the file
+        association): offer to install it on the registered Pebble."""
+        target = next((arg for arg in command_line.get_arguments()[1:]
+                       if arg.lower().endswith(".pbw")), None)
+        if target is None:
+            return
+        win = self.props.active_window
+        entry = next((e for e in self.device_manager.list()
+                      if e.kind == "pebble"), None)
+        if win is None or entry is None:
+            log.info("ignoring %s: no Pebble registered", target)
+            return
+        gfile = command_line.create_file_for_arg(target)
+        from vitals.dialogs.pbw_install_dialog import PbwInstallDialog
+        PbwInstallDialog(self.ble, entry, gfile).present(win)
 
     def hold_for_background(self) -> None:
         """Keep the app (and its BLE loop) alive with no window open."""

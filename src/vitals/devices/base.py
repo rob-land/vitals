@@ -389,8 +389,10 @@ def _load_builtins() -> None:
         return
     # Import side effects register built-in plugins.
     from vitals.devices import (
+        bangle,  # noqa: F401
         pinetime,  # noqa: F401
     )
+    from vitals.devices.pebble import pebble  # noqa: F401
     _BUILTINS_LOADED = True
 
 

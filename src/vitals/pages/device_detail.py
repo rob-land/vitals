@@ -76,19 +76,24 @@ class DeviceDetailPage(Adw.NavigationPage):
 
         actions = Adw.PreferencesGroup()
         if entry.role == "watch":
-            sync_row = Adw.ButtonRow(title="Sync Now")
-            sync_row.set_start_icon_name("emblem-synchronizing-symbolic")
+            sync_row = _action_row("Sync Now", "emblem-synchronizing-symbolic")
             sync_row.set_sensitive(not entry.busy)
             sync_row.connect("activated", self._on_sync)
             actions.add(sync_row)
         if plugin is not None and plugin.SUPPORTS_FIRMWARE_UPDATE:
-            actions.add(_stub_row(self, "Firmware Update",
-                                  "software-update-available-symbolic"))
+            row = _action_row("Firmware Update",
+                              "software-update-available-symbolic")
+            row.connect("activated", self._on_firmware)
+            actions.add(row)
         if plugin is not None and plugin.SUPPORTS_APP_INSTALL:
-            actions.add(_stub_row(self, "App Store",
-                                  "folder-download-symbolic"))
+            row = _action_row("App and Watchface Store",
+                              "folder-download-symbolic")
+            row.connect("activated", self._on_store)
+            actions.add(row)
         if plugin is not None and plugin.SUPPORTS_ALARM_PUSH:
-            actions.add(_stub_row(self, "Alarms", "alarm-symbolic"))
+            row = _action_row("Alarms", "alarm-symbolic")
+            row.connect("activated", self._on_alarms)
+            actions.add(row)
         box.append(actions)
 
         settings = Adw.PreferencesGroup()
@@ -115,6 +120,28 @@ class DeviceDetailPage(Adw.NavigationPage):
     def _on_sync(self, *_):
         if not self._manager.sync_device(self._address):
             self._toast("Couldn’t start the sync")
+
+    def _ble(self):
+        return self.get_root().get_application().ble
+
+    def _on_firmware(self, *_):
+        entry = self._manager.get(self._address)
+        if entry.plugin.FIRMWARE_REQUIRES_DFU_MODE:
+            from vitals.dialogs.bangle_firmware_dialog import (
+                BangleFirmwareDialog)
+            BangleFirmwareDialog(self._ble(), entry).present(self)
+        else:
+            from vitals.dialogs.firmware_dialog import FirmwareDialog
+            FirmwareDialog(self._ble(), entry).present(self)
+
+    def _on_store(self, *_):
+        from vitals.dialogs.app_store_dialog import AppStoreDialog
+        AppStoreDialog(self._ble(), self._manager.get(self._address)).present(self)
+
+    def _on_alarms(self, *_):
+        from vitals.dialogs.alarms_dialog import AlarmsDialog
+        entry = self._manager.get(self._address)
+        AlarmsDialog(self._manager, self._address, entry.name).present(self)
 
     def _on_forget(self, *_):
         entry = self._manager.get(self._address)
@@ -149,14 +176,9 @@ def _info_row(title: str, value: str) -> Adw.ActionRow:
     return row
 
 
-def _stub_row(page: DeviceDetailPage, title: str, icon: str) -> Adw.ButtonRow:
-    # Placeholder rows for capabilities whose dialogs arrive with the
-    # Pebble/Bangle port; showing them keeps the layout honest.
+def _action_row(title: str, icon: str) -> Adw.ButtonRow:
     row = Adw.ButtonRow(title=title)
     row.set_start_icon_name(icon)
-    row.connect("activated",
-                lambda *_: page._toast(f"{title} arrives with the "
-                                       "Pebble/Bangle port"))
     return row
 
 

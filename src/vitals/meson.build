@@ -3,6 +3,7 @@ python.install_sources(
     '__init__.py',
     '__main__.py',
     'main.py',
+    'alarms.py',
     'application.py',
     'background_portal.py',
     'window.py',
@@ -37,16 +38,41 @@ python.install_sources(
   files(
     'devices/__init__.py',
     'devices/base.py',
+    'devices/bangle.py',
+    'devices/bangle_dfu.py',
+    'devices/bangle_store.py',
     'devices/manager.py',
     'devices/pinetime.py',
+    'devices/store.py',
+    'devices/weather.py',
   ),
   subdir: meson.project_name() / 'devices',
 )
 
 python.install_sources(
   files(
+    'devices/pebble/__init__.py',
+    'devices/pebble/fw_update.py',
+    'devices/pebble/pbw.py',
+    'devices/pebble/pebble.py',
+    'devices/pebble/pebble_appinstall.py',
+    'devices/pebble/pebble_health.py',
+    'devices/pebble/pebble_store.py',
+    'devices/pebble/ppogatt.py',
+    'devices/pebble/protobuf_log.py',
+  ),
+  subdir: meson.project_name() / 'devices' / 'pebble',
+)
+
+python.install_sources(
+  files(
     'dialogs/__init__.py',
+    'dialogs/alarms_dialog.py',
+    'dialogs/app_store_dialog.py',
+    'dialogs/bangle_firmware_dialog.py',
+    'dialogs/firmware_dialog.py',
     'dialogs/pairing.py',
+    'dialogs/pbw_install_dialog.py',
   ),
   subdir: meson.project_name() / 'dialogs',
 )

@@ -9,6 +9,11 @@ src/vitals/pages/timeline.py
 src/vitals/pages/devices.py
 src/vitals/pages/device_detail.py
 src/vitals/dialogs/pairing.py
+src/vitals/dialogs/alarms_dialog.py
+src/vitals/dialogs/app_store_dialog.py
+src/vitals/dialogs/bangle_firmware_dialog.py
+src/vitals/dialogs/firmware_dialog.py
+src/vitals/dialogs/pbw_install_dialog.py
 src/vitals/preferences.py
 src/vitals/sources/food.py
 src/vitals/sources/food_lookup.py

@@ -226,6 +226,9 @@ class DeviceManager(GObject.Object):
                 sleep_series = await device.get_sleep_series()
             if plugin.SUPPORTS_WORKOUT_READ:
                 workout_series = await device.get_workout_series()
+            if (plugin.SUPPORTS_WEATHER_PUSH and self._settings is not None
+                    and self._settings.get_boolean("weather-enabled")):
+                await self._push_weather(device, result)
             await device.sync()
         finally:
             await device.disconnect()
@@ -251,6 +254,30 @@ class DeviceManager(GObject.Object):
             self._recorder.ingest_from_thread(envelopes)
         result["records"] = len(envelopes)
         return result
+
+    async def _push_weather(self, device, result: dict) -> None:
+        """Fetch a forecast (off the BLE loop) and store it on the watch.
+        A weather failure is a post-sync warning, never fatal to the
+        sync. Runs on the BLE worker loop with the link open."""
+        lat = self._settings.get_double("weather-latitude")
+        lon = self._settings.get_double("weather-longitude")
+        name = self._settings.get_string("weather-location-name")
+        if not name or (lat == 0 and lon == 0):
+            result["warnings"].append("weather: set a location in Preferences")
+            return
+        try:
+            from vitals.devices import weather as weather_mod
+            unit = self._settings.get_string("weather-units")
+            forecast = await asyncio.to_thread(
+                weather_mod.fetch_forecast, lat, lon, name, unit,
+                int(time.time()))
+            await device.push_weather(
+                weather_mod.location_key(lat, lon),
+                weather_mod.serialize_entry(forecast))
+            log.info("sync: weather pushed (%s)", name)
+        except Exception:
+            log.exception("sync: weather push failed")
+            result["warnings"].append("weather update failed")
 
     def _finish_sync(self, entry: DeviceEntry, future) -> bool:
         try:

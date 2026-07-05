@@ -1,12 +1,13 @@
 [Desktop Entry]
 Name=Vitals
-GenericName=Health Dashboard
-Comment=View your health data and manage app access to the Pulse hub
-Exec=vitals
+GenericName=Health Tracker
+Comment=Track health from watches, sensors and manual logs
+Exec=vitals %U
 Icon=land.rob.vitals
 Terminal=false
 Type=Application
 Categories=Utility;
-Keywords=health;fitness;steps;heart rate;sleep;pulse;dashboard;
+MimeType=application/x-pebble-bundle;
+Keywords=health;fitness;steps;heart rate;sleep;food;water;smartwatch;Pebble;Bangle;PineTime;
 StartupNotify=true
 StartupWMClass=land.rob.vitals
