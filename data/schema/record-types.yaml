@@ -1,0 +1,493 @@
+# Pulse canonical health-record type catalog
+#
+# This file is the single source of truth for the metric taxonomy. The
+# design docs, JSON Schemas, SQLite DDL and D-Bus contract all derive
+# from it. Each `type` is a stable string key used on the wire, in
+# storage, and in permission grants.
+#
+# Standards alignment (see docs/design/05-standards-mapping.md):
+#   - canonical_unit  : UCUM code (http://unitsofmeasure.org) used for
+#                       on-disk storage. Inbound values are converted to
+#                       this unit on insert; views may request display
+#                       units. UCUM is the unit authority, NOT the looser
+#                       Open mHealth unit vocabulary ("beats/min" etc.).
+#   - omh             : the Open mHealth schema this maps to on export.
+#   - fhir.code       : the FHIR R5 Observation code (LOINC unless noted).
+#                       All LOINC codes were verified against the LOINC
+#                       registry (loinc.org) on 2026-06-03; core vitals
+#                       follow the FHIR Vital Signs profile. vo2_max has no
+#                       precise LOINC and is intentionally left unmapped
+#                       (code: null) rather than carry an approximate code.
+#   - gatt            : standard Bluetooth GATT service that exposes the
+#                       metric, when one exists (lets a generic BLE bridge
+#                       support standards-compliant devices for free).
+#
+# `value` is one of:
+#   scalar      -> a single number in `canonical_unit`
+#   components  -> a fixed set of named scalars (e.g. blood pressure)
+#   structured  -> an object/array body (e.g. sleep stages, nutrients)
+#
+# `interval: true` means the record spans [effective_start, effective_end]
+# (steps over an hour, a workout, a sleep episode); `interval: false` is a
+# point-in-time observation where effective_end is null/equal to start.
+
+version: 1
+unit_authority: "UCUM — http://unitsofmeasure.org"
+fhir_release: "R5"
+omh_namespace: "omh"
+
+categories:
+  - activity        # movement, exercise, energy expenditure
+  - vitals          # cardiorespiratory and temperature signals
+  - body            # anthropometry / composition
+  - sleep           # sleep timing and architecture
+  - nutrition       # food, fluid and substance intake
+  - metabolic       # glucose, insulin, ketones
+  - reproductive    # cycle and fertility
+  - mindfulness     # mental state, meditation
+  - clinical        # medications, lab results, documents
+
+types:
+
+  # ---- activity -----------------------------------------------------
+  - key: step_count
+    category: activity
+    title: Step count
+    value: scalar
+    canonical_unit: "{steps}"          # UCUM annotation for a dimensionless count
+    display_units: ["{steps}"]
+    interval: true
+    omh: { name: step-count, version: "3.0" }
+    fhir:
+      category: activity
+      code: { system: loinc, code: "55423-8", display: "Number of steps in unspecified time Pedometer" }
+    modalities: [sensed, derived]
+    meta_fields: [descriptive_statistic]
+    gatt: null
+    notes: >
+      Counts are additive over disjoint intervals; never sum overlapping
+      intervals from different sources (see storage de-dup rules).
+
+  - key: distance
+    category: activity
+    title: Distance travelled
+    value: scalar
+    canonical_unit: "m"
+    display_units: ["m", "km", "mi"]
+    interval: true
+    omh: { name: physical-activity, version: "1.2" }   # distance sub-field
+    fhir:
+      category: activity
+      code: { system: loinc, code: "55430-3", display: "Walking distance unspecified time Pedometer" }   # walking/pedometer-specific; closest standard activity-distance code
+    modalities: [sensed, derived]
+    meta_fields: [activity_name]
+    gatt: { service: "0x1814", name: "Running Speed and Cadence" }
+
+  - key: floors_climbed
+    category: activity
+    title: Floors climbed
+    value: scalar
+    canonical_unit: "{floors}"
+    interval: true
+    omh: null
+    fhir: { category: activity, code: { system: loinc, code: "100304-5", display: "Flights climbed [#] Reporting Period" } }
+    modalities: [sensed, derived]
+
+  - key: active_energy
+    category: activity
+    title: Active energy burned
+    value: scalar
+    canonical_unit: "kcal"
+    display_units: ["kcal", "kJ"]
+    interval: true
+    omh: { name: calories-burned, version: "1.0" }
+    fhir: { category: activity, code: { system: loinc, code: "41981-2", display: "Calories burned" } }
+    modalities: [sensed, derived]
+
+  - key: workout
+    category: activity
+    title: Workout session
+    value: structured                  # see json-schema/workout.schema.json
+    canonical_unit: null
+    interval: true
+    omh: { name: physical-activity, version: "1.2" }
+    fhir: { category: activity, code: { system: loinc, code: "73985-4", display: "Exercise activity" } }
+    modalities: [sensed, self_reported, derived]
+    meta_fields: [activity_name, reported_activity_intensity, met_value, gps_track_ref]
+    notes: >
+      Body carries activity_name, duration, distance, active_energy, mean
+      and max heart_rate, and an optional reference to a GPS track stored
+      as a GPX/TCX/FIT blob. Per-second samples (HR, cadence) are stored
+      as their own records linked by meta.session_uuid.
+
+  - key: vo2_max
+    category: activity
+    title: VO2 max
+    value: scalar
+    canonical_unit: "mL/(kg.min)"
+    interval: false
+    omh: null
+    fhir: { category: vital-signs, code: null }   # no precise LOINC for weight-normalized VO2 max; closest generic is 60842-2 "Oxygen consumption (VO2)" (mL/min, not per-kg). Use a local code until LOINC adds one.
+    modalities: [derived]
+
+  # ---- vitals -------------------------------------------------------
+  - key: heart_rate
+    category: vitals
+    title: Heart rate
+    value: scalar
+    canonical_unit: "/min"
+    display_units: ["/min"]
+    interval: false
+    omh: { name: heart-rate, version: "2.0" }
+    fhir:
+      category: vital-signs
+      code: { system: loinc, code: "8867-4", display: "Heart rate" }
+    modalities: [sensed, derived]
+    meta_fields: [temporal_relationship_to_physical_activity, temporal_relationship_to_sleep, descriptive_statistic]
+    gatt: { service: "0x180D", name: "Heart Rate" }
+
+  - key: resting_heart_rate
+    category: vitals
+    title: Resting heart rate
+    value: scalar
+    canonical_unit: "/min"
+    interval: false
+    omh: { name: heart-rate, version: "2.0" }
+    fhir: { category: vital-signs, code: { system: loinc, code: "40443-4", display: "Heart rate --resting" } }
+    modalities: [derived]
+
+  - key: heart_rate_variability
+    category: vitals
+    title: Heart rate variability (SDNN)
+    value: scalar
+    canonical_unit: "ms"
+    interval: false
+    omh: null
+    fhir: { category: vital-signs, code: { system: loinc, code: "80404-7", display: "R-R interval.standard deviation (Heart rate variability)" } }
+    modalities: [sensed, derived]
+
+  - key: respiratory_rate
+    category: vitals
+    title: Respiratory rate
+    value: scalar
+    canonical_unit: "/min"
+    interval: false
+    omh: { name: respiratory-rate, version: "2.0" }
+    fhir: { category: vital-signs, code: { system: loinc, code: "9279-1", display: "Respiratory rate" } }
+    modalities: [sensed, derived]
+
+  - key: oxygen_saturation
+    category: vitals
+    title: Peripheral oxygen saturation (SpO2)
+    value: scalar
+    canonical_unit: "%"
+    interval: false
+    omh: { name: oxygen-saturation, version: "2.0" }
+    fhir: { category: vital-signs, code: { system: loinc, code: "2708-6", display: "Oxygen saturation in Arterial blood" } }   # FHIR vital-signs profile code; also emit 59408-5 "...by Pulse oximetry" as a secondary coding for pulse-ox sources
+    modalities: [sensed]
+    meta_fields: [measurement_method, temporal_relationship_to_sleep]
+    gatt: { service: "0x1822", name: "Pulse Oximeter" }
+
+  - key: body_temperature
+    category: vitals
+    title: Body temperature
+    value: scalar
+    canonical_unit: "Cel"
+    display_units: ["Cel", "[degF]"]
+    interval: false
+    omh: { name: body-temperature, version: "3.0" }
+    fhir: { category: vital-signs, code: { system: loinc, code: "8310-5", display: "Body temperature" } }
+    modalities: [sensed, self_reported]
+    meta_fields: [measurement_location]
+    gatt: { service: "0x1809", name: "Health Thermometer" }
+
+  - key: blood_pressure
+    category: vitals
+    title: Blood pressure
+    value: components
+    components:
+      systolic:  { canonical_unit: "mm[Hg]", fhir_code: "8480-6" }
+      diastolic: { canonical_unit: "mm[Hg]", fhir_code: "8462-4" }
+    interval: false
+    omh: { name: blood-pressure, version: "4.0" }
+    fhir:
+      category: vital-signs
+      code: { system: loinc, code: "85354-9", display: "Blood pressure panel" }
+    modalities: [sensed, self_reported]
+    meta_fields: [body_posture]
+    gatt: { service: "0x1810", name: "Blood Pressure" }
+
+  - key: ecg
+    category: vitals
+    title: Electrocardiogram
+    value: structured                  # waveform stored as a blob; body holds classification + ref
+    canonical_unit: null
+    interval: true
+    omh: null
+    fhir: { category: procedure, code: { system: loinc, code: "11524-6", display: "EKG study" } }
+    modalities: [sensed]
+    notes: "Body holds sampling_rate_hz, lead, classification, and a blob ref to the raw waveform."
+
+  # ---- body ---------------------------------------------------------
+  - key: body_weight
+    category: body
+    title: Body weight
+    value: scalar
+    canonical_unit: "kg"
+    display_units: ["kg", "[lb_av]", "[stone_av]"]
+    interval: false
+    omh: { name: body-weight, version: "1.0" }
+    fhir: { category: vital-signs, code: { system: loinc, code: "29463-7", display: "Body weight" } }
+    modalities: [sensed, self_reported]
+    gatt: { service: "0x181D", name: "Weight Scale" }
+
+  - key: body_height
+    category: body
+    title: Body height
+    value: scalar
+    canonical_unit: "cm"
+    display_units: ["cm", "[in_i]"]
+    interval: false
+    omh: { name: body-height, version: "1.0" }
+    fhir: { category: vital-signs, code: { system: loinc, code: "8302-2", display: "Body height" } }
+    modalities: [self_reported, sensed]
+
+  - key: body_mass_index
+    category: body
+    title: Body mass index
+    value: scalar
+    canonical_unit: "kg/m2"
+    interval: false
+    omh: { name: body-mass-index, version: "2.0" }
+    fhir: { category: vital-signs, code: { system: loinc, code: "39156-5", display: "Body mass index" } }
+    modalities: [derived]
+
+  - key: body_fat_percentage
+    category: body
+    title: Body fat percentage
+    value: scalar
+    canonical_unit: "%"
+    interval: false
+    omh: null
+    fhir: { category: vital-signs, code: { system: loinc, code: "41982-0", display: "Percentage of body fat Measured" } }
+    modalities: [sensed]
+    gatt: { service: "0x181B", name: "Body Composition" }
+
+  - key: lean_body_mass
+    category: body
+    title: Lean body mass
+    value: scalar
+    canonical_unit: "kg"
+    interval: false
+    omh: null
+    fhir: { category: vital-signs, code: { system: loinc, code: "91557-9", display: "Lean body weight" } }
+    modalities: [sensed, derived]
+    gatt: { service: "0x181B", name: "Body Composition" }
+
+  - key: waist_circumference
+    category: body
+    title: Waist circumference
+    value: scalar
+    canonical_unit: "cm"
+    interval: false
+    omh: null
+    fhir: { category: vital-signs, code: { system: loinc, code: "8280-0", display: "Waist Circumference at umbilicus by Tape measure" } }
+    modalities: [self_reported]
+
+  # ---- sleep --------------------------------------------------------
+  - key: sleep_episode
+    category: sleep
+    title: Sleep episode
+    value: structured                  # see json-schema/sleep-episode.schema.json
+    canonical_unit: null
+    interval: true
+    omh: { name: sleep-episode, version: "1.0" }
+    fhir: { category: activity, code: { system: loinc, code: "93832-4", display: "Sleep duration" } }
+    modalities: [sensed, self_reported]
+    meta_fields: [sleep_efficiency, latency_to_sleep_onset]
+    notes: >
+      Body holds an ordered list of stages (awake/rem/light/deep/unknown)
+      with start/end, plus derived totals. A scalar sleep_duration is
+      derived on read for clients that only want a number.
+
+  # ---- nutrition ----------------------------------------------------
+  - key: dietary_energy
+    category: nutrition
+    title: Dietary energy intake
+    value: scalar
+    canonical_unit: "kcal"
+    display_units: ["kcal", "kJ"]
+    interval: false
+    omh: null
+    fhir: { category: nutrition, code: { system: loinc, code: "9052-2", display: "Calorie intake total" } }
+    modalities: [self_reported]
+    meta_fields: [meal, food_ref]
+
+  - key: nutrient_intake
+    category: nutrition
+    title: Nutrient intake
+    value: structured                  # see json-schema/nutrient-intake.schema.json
+    canonical_unit: null
+    interval: false
+    omh: null
+    fhir: { category: nutrition, resource: NutritionIntake }
+    modalities: [self_reported]
+    meta_fields: [meal, food_ref, off_barcode, serving]
+    notes: >
+      Body carries macro/micro nutrients keyed to Open Food Facts
+      `nutriments` field names (energy-kcal, proteins, carbohydrates,
+      sugars, fat, saturated-fat, fiber, salt, sodium, ...), each a scalar
+      with a UCUM unit. food_ref / off_barcode link to the source product.
+
+  - key: water_intake
+    category: nutrition
+    title: Water / fluid intake
+    value: scalar
+    canonical_unit: "mL"
+    display_units: ["mL", "[foz_us]"]
+    interval: false
+    omh: null
+    fhir: { category: nutrition, code: { system: loinc, code: "9103-3", display: "Fluid intake total Measured" } }
+    modalities: [self_reported]
+    meta_fields: [meal]
+
+  - key: caffeine_intake
+    category: nutrition
+    title: Caffeine intake
+    value: scalar
+    canonical_unit: "mg"
+    interval: false
+    omh: null
+    fhir: { category: nutrition }
+    modalities: [self_reported]
+
+  - key: alcohol_intake
+    category: nutrition
+    title: Alcohol intake
+    value: scalar
+    canonical_unit: "g"                # grams of pure ethanol; meta carries standard_drinks
+    interval: false
+    omh: null
+    fhir: { category: nutrition }
+    modalities: [self_reported]
+    meta_fields: [standard_drinks, beverage]
+
+  # ---- metabolic ----------------------------------------------------
+  - key: blood_glucose
+    category: metabolic
+    title: Blood glucose
+    value: scalar
+    canonical_unit: "mmol/L"           # mg/dL = mmol/L x 18.0156 (see standards-mapping)
+    display_units: ["mmol/L", "mg/dL"]
+    interval: false
+    omh: { name: blood-glucose, version: "3.0" }
+    fhir: { category: laboratory, code: { system: loinc, code: "15074-8", display: "Glucose [Moles/volume] in Blood" } }   # molar code matches mmol/L canonical; 14743-9 (capillary blood by glucometer) for fingerstick
+    modalities: [sensed, self_reported]
+    meta_fields: [temporal_relationship_to_meal, temporal_relationship_to_sleep, specimen_source]
+    gatt: { service: "0x1808", name: "Glucose" }
+
+  - key: continuous_glucose
+    category: metabolic
+    title: Continuous glucose (CGM)
+    value: scalar
+    canonical_unit: "mmol/L"
+    display_units: ["mmol/L", "mg/dL"]
+    interval: false
+    omh: { name: blood-glucose, version: "3.0" }
+    fhir: { category: laboratory, code: { system: loinc, code: "105272-9", display: "Glucose [Moles/volume] in Interstitial fluid" } }   # CGM measures interstitial fluid, not blood
+    modalities: [sensed]
+    meta_fields: [trend, specimen_source]
+    gatt: { service: "0x181F", name: "Continuous Glucose Monitoring" }
+    notes: "High-frequency (~5 min) stream; bridge from xDrip/Nightscout is the expected source."
+
+  - key: insulin_dose
+    category: metabolic
+    title: Insulin dose
+    value: scalar
+    canonical_unit: "[iU]"             # UCUM international unit
+    interval: false
+    omh: null
+    fhir: { category: nutrition, resource: MedicationAdministration }
+    modalities: [self_reported]
+    meta_fields: [insulin_type, injection_site]
+
+  - key: blood_ketones
+    category: metabolic
+    title: Blood ketones
+    value: scalar
+    canonical_unit: "mmol/L"
+    interval: false
+    omh: null
+    fhir: { category: laboratory, code: { system: loinc, code: "66441-7", display: "Beta hydroxybutyrate [Moles/volume] in Blood by Test strip" } }
+    modalities: [sensed, self_reported]
+
+  # ---- reproductive -------------------------------------------------
+  - key: menstrual_flow
+    category: reproductive
+    title: Menstrual flow
+    value: scalar                      # ordinal 0..3 (none/light/medium/heavy); meta.scale documents it
+    canonical_unit: "{ordinal}"
+    interval: false
+    omh: null
+    fhir: { category: vital-signs, resource: Observation }
+    modalities: [self_reported]
+    meta_fields: [scale]
+    notes: >
+      Cycle data is the most privacy-sensitive category. It is opt-in,
+      never included in '*' grants, and excluded from default exports.
+
+  - key: basal_body_temperature
+    category: reproductive
+    title: Basal body temperature
+    value: scalar
+    canonical_unit: "Cel"
+    interval: false
+    omh: { name: body-temperature, version: "3.0" }
+    fhir: { category: vital-signs, code: { system: loinc, code: "8310-5", display: "Body temperature" } }
+    modalities: [self_reported, sensed]
+
+  # ---- mindfulness --------------------------------------------------
+  - key: mindful_minutes
+    category: mindfulness
+    title: Mindful minutes
+    value: scalar
+    canonical_unit: "min"
+    interval: true
+    omh: null
+    fhir: { category: activity }
+    modalities: [self_reported, sensed]
+
+  - key: mood
+    category: mindfulness
+    title: Mood
+    value: scalar                      # ordinal -2..2; meta.scale + meta.tags document it
+    canonical_unit: "{ordinal}"
+    interval: false
+    omh: null
+    fhir: { category: survey }
+    modalities: [self_reported]
+    meta_fields: [scale, tags, note]
+
+  # ---- clinical -----------------------------------------------------
+  - key: medication_administration
+    category: clinical
+    title: Medication administration
+    value: structured
+    canonical_unit: null
+    interval: false
+    omh: null
+    fhir: { category: clinical, resource: MedicationAdministration }
+    modalities: [self_reported]
+    meta_fields: [medication_name, rxnorm_code, dose, route, adherence]
+
+  - key: lab_result
+    category: clinical
+    title: Laboratory result
+    value: scalar                      # generic; meta.loinc carries the specific test code
+    canonical_unit: null               # unit is per-result, carried on the record
+    interval: false
+    omh: null
+    fhir: { category: laboratory, resource: Observation }
+    modalities: [self_reported]
+    meta_fields: [loinc, reference_range, specimen_source]
+    notes: "Catch-all for imported lab panels; the specific test lives in meta.loinc."

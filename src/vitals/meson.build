@@ -31,6 +31,31 @@ python.install_sources(
   subdir: meson.project_name() / 'widgets',
 )
 
+python.install_sources(
+  files(
+    'core/__init__.py',
+    'core/catalog.py',
+    'core/errors.py',
+    'core/events.py',
+    'core/migrate.py',
+    'core/records.py',
+    'core/replicate.py',
+    'core/resources.py',
+    'core/store.py',
+    'core/units.py',
+  ),
+  subdir: meson.project_name() / 'core',
+)
+
+python.install_sources(
+  files(
+    'ingest/__init__.py',
+    'ingest/builders.py',
+    'ingest/recorder.py',
+  ),
+  subdir: meson.project_name() / 'ingest',
+)
+
 configure_file(
   input: 'const.py.in',
   output: 'const.py',

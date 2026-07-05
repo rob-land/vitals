@@ -52,5 +52,17 @@ if compile_schemas.found()
   )
 endif
 
+# Health-data schema: the type catalog + SQL migrations, resolved at
+# runtime by vitals.core.resources (PKGDATADIR is its data root).
+install_data(
+  'schema/record-types.yaml',
+  install_dir: pkgdatadir,
+)
+install_data(
+  'schema/sql/0001_initial.sql',
+  'schema/sql/0002_devices.sql',
+  install_dir: pkgdatadir / 'sql',
+)
+
 # UI templates -> Blueprint -> .ui -> GResource bundle
 subdir('ui')
