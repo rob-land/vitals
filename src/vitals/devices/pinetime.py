@@ -53,6 +53,20 @@ NEW_ALERT_CHAR_UUID = "00002a46-0000-1000-8000-00805f9b34fb"
 _ALERT_HEADER = bytes([0xFA, 0x01, 0xFF])
 _ALERT_MAX_CHARS = 100
 
+# Music service: per-field write characteristics + an event char the
+# watch notifies playback buttons on. Integers are big-endian seconds.
+MUSIC_EVENT_CHAR_UUID    = "00000001-78fc-48fe-8e23-433b3a1942d0"
+MUSIC_STATUS_CHAR_UUID   = "00000002-78fc-48fe-8e23-433b3a1942d0"
+MUSIC_ARTIST_CHAR_UUID   = "00000003-78fc-48fe-8e23-433b3a1942d0"
+MUSIC_TRACK_CHAR_UUID    = "00000004-78fc-48fe-8e23-433b3a1942d0"
+MUSIC_ALBUM_CHAR_UUID    = "00000005-78fc-48fe-8e23-433b3a1942d0"
+MUSIC_POSITION_CHAR_UUID = "00000006-78fc-48fe-8e23-433b3a1942d0"
+MUSIC_LENGTH_CHAR_UUID   = "00000007-78fc-48fe-8e23-433b3a1942d0"
+# Event byte → neutral command (MusicService.h).
+_MUSIC_EVENTS = {0xE0: "refresh", 0x00: "play", 0x01: "pause",
+                 0x03: "next", 0x04: "previous",
+                 0x05: "volumeup", 0x06: "volumedown"}
+
 # SimpleWeatherService — write-only, message type + version prefix.
 WEATHER_DATA_CHAR_UUID = "00050001-78fc-48fe-8e23-433b3a1942d0"
 _WEATHER_MAX_DAYS = 5
@@ -134,6 +148,7 @@ class PineTimeDevice(Device):
     SUPPORTS_ACTIVITY_READ  = True
     SUPPORTS_NOTIFICATIONS  = True
     SUPPORTS_WEATHER_PUSH   = True
+    SUPPORTS_MUSIC_CONTROL  = True
 
     @classmethod
     def matches(cls, advertised_name: str | None,
@@ -153,6 +168,7 @@ class PineTimeDevice(Device):
     async def connect(self) -> None:
         from bleak import BleakClient
         self._client = BleakClient(self.address)
+        self._music_events_on = False
         await self._client.connect()
 
     async def disconnect(self) -> None:
@@ -219,6 +235,38 @@ class PineTimeDevice(Device):
         payload = self._encode_current_time(unix_timestamp)
         await self._client.write_gatt_char(
             CURRENT_TIME_CHAR_UUID, payload, response=True)
+
+    async def push_now_playing(self, track) -> None:
+        """Write the music app's fields and subscribe (once per
+        connection) to its event characteristic for watch buttons."""
+        if self._client is None:
+            raise RuntimeError("not connected")
+        if not getattr(self, "_music_events_on", False):
+            try:
+                await self._client.start_notify(
+                    MUSIC_EVENT_CHAR_UUID, self._on_music_event)
+                self._music_events_on = True
+            except Exception:
+                log.debug("PineTime: music event subscribe failed",
+                          exc_info=True)
+        writes = (
+            (MUSIC_ARTIST_CHAR_UUID, track.artist.encode("utf-8")),
+            (MUSIC_TRACK_CHAR_UUID, track.track.encode("utf-8")),
+            (MUSIC_ALBUM_CHAR_UUID, track.album.encode("utf-8")),
+            (MUSIC_LENGTH_CHAR_UUID,
+             struct.pack(">I", max(0, track.duration_s))),
+            (MUSIC_POSITION_CHAR_UUID,
+             struct.pack(">I", max(0, track.position_s))),
+            (MUSIC_STATUS_CHAR_UUID, bytes([1 if track.playing else 0])),
+        )
+        for char, value in writes:
+            await self._client.write_gatt_char(char, value, response=True)
+
+    def _on_music_event(self, _char, data: bytearray) -> None:
+        handler = getattr(self, "_music_handler", None)
+        command = _MUSIC_EVENTS.get(data[0]) if data else None
+        if handler is not None and command is not None:
+            handler(command)
 
     async def push_notification(self, note) -> None:
         """Forward one banner via the Alert Notification Service."""

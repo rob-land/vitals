@@ -183,6 +183,7 @@ class Device(abc.ABC):
     SUPPORTS_APP_INSTALL:     ClassVar[bool] = False
     SUPPORTS_WEATHER_PUSH:    ClassVar[bool] = False
     SUPPORTS_CALENDAR_PUSH:   ClassVar[bool] = False
+    SUPPORTS_MUSIC_CONTROL:   ClassVar[bool] = False
     # The device can measure health metrics (HR, SpO2, temperature, …)
     # on its own on a periodic schedule, and Vitals can turn that on/off
     # and set the interval — so the user configures the device from
@@ -402,6 +403,22 @@ class Device(abc.ABC):
         override it."""
         raise NotImplementedError(
             f"{self.display_name} does not support weather")
+
+    async def push_now_playing(self, track) -> None:
+        """Show the phone's current playback (``vitals.mpris.NowPlaying``)
+        on the watch. Called over a persistent link whenever the track
+        or state changes. Default raises NotImplementedError; subclasses
+        that flip SUPPORTS_MUSIC_CONTROL=True must override."""
+        raise NotImplementedError(
+            f"{self.display_name} does not support music control")
+
+    def set_music_command_handler(self, handler) -> None:
+        """Register ``handler(command)`` for watch-side playback
+        buttons ("playpause", "play", "pause", "next", "previous",
+        "volumeup", "volumedown", "refresh"). Called from the BLE loop;
+        the application marshals to MPRIS. Plugins route their
+        transport's inbound music messages to ``self._music_handler``."""
+        self._music_handler = handler
 
     async def push_calendar(self, events, stale_pin_ids) -> None:
         """Reconcile the watch's calendar pins/agenda with ``events``

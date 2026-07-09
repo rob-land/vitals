@@ -110,8 +110,23 @@ class VitalsApplication(Adw.Application):
             lambda _m, note: self.device_manager.forward_notification(note))
         self.device_manager.connect(
             "links-changed", lambda *_: self._reconcile_notification_monitor())
+        # Music: phone playback state flows to linked watches; watch
+        # buttons flow back to whichever player is active.
+        from vitals.mpris import MprisBridge
+        self.mpris = MprisBridge()
+        self.mpris.connect(
+            "now-playing-changed",
+            lambda _b, track: self.device_manager.push_now_playing(track))
+        self.device_manager.connect("music-command", self._on_music_command)
         self.device_manager.reconcile_links()
         self._reconcile_notification_monitor()
+
+    def _on_music_command(self, _manager, address: str, command: str) -> None:
+        if command == "refresh":
+            self.device_manager.push_now_playing(
+                self.mpris.now_playing(), address=address)
+        else:
+            self.mpris.command(command)
 
     def _reconcile_notification_monitor(self) -> None:
         if self.device_manager.has_links:

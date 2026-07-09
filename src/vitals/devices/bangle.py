@@ -137,6 +137,7 @@ class BangleDevice(Device):
     SUPPORTS_APP_INSTALL   = True
     SUPPORTS_NOTIFICATIONS = True
     SUPPORTS_WEATHER_PUSH  = True
+    SUPPORTS_MUSIC_CONTROL = True
     # Firmware updates run over Nordic DFU, which the user enters with a
     # physical long-press (Espruino disables remote DFU entry).
     SUPPORTS_FIRMWARE_UPDATE   = True
@@ -264,6 +265,17 @@ class BangleDevice(Device):
         """Send current conditions in the GB v1 weather shape; the
         stock weather widget/app stores and shows it."""
         await self._send_gb(gb_weather(forecast))
+
+    async def push_now_playing(self, track) -> None:
+        """GB musicinfo + musicstate for the stock music-control app.
+        Watch-side buttons come back as JSON lines the plugin doesn't
+        listen for yet, so control is one-way for now."""
+        await self._send_gb({"t": "musicinfo", "artist": track.artist,
+                             "album": track.album, "track": track.track,
+                             "dur": track.duration_s})
+        await self._send_gb({"t": "musicstate",
+                             "state": "play" if track.playing else "pause",
+                             "position": track.position_s})
 
     # ── Feature methods ────────────────────────────────────────────
 

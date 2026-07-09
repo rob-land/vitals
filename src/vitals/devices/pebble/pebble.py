@@ -150,6 +150,7 @@ class PebbleDevice(Device):
     SUPPORTS_APP_INSTALL     = True
     SUPPORTS_WEATHER_PUSH    = True
     SUPPORTS_CALENDAR_PUSH   = True
+    SUPPORTS_MUSIC_CONTROL   = True
 
     # The host-side PPoGATT GATT server can only exist once per process;
     # DeviceManager serializes anything sharing this transport name.
@@ -190,7 +191,20 @@ class PebbleDevice(Device):
         self._client = PebbleGateway(self.address)
         self._health_sessions = None
         await self._client.connect()
+        # Base handler for unsolicited messages (music buttons). The
+        # firmware/app/health flows swap their own handlers in and
+        # restore this one when done.
+        self._client.set_message_handler(self._on_unsolicited)
         await self._log_device_info()
+
+    def _on_unsolicited(self, endpoint: int, payload: bytes) -> None:
+        from vitals.devices.pebble.music import (
+            ENDPOINT_MUSIC, decode_watch_command)
+        if endpoint == ENDPOINT_MUSIC:
+            handler = getattr(self, "_music_handler", None)
+            command = decode_watch_command(payload)
+            if handler is not None and command is not None:
+                handler(command)
 
     async def disconnect(self) -> None:
         if self._client is None:
@@ -253,7 +267,7 @@ class PebbleDevice(Device):
         try:
             await updater.flash(bundle)
         finally:
-            self._client.set_message_handler(None)
+            self._client.set_message_handler(self._on_unsolicited)
 
     @classmethod
     def app_store(cls):
@@ -281,7 +295,7 @@ class PebbleDevice(Device):
         try:
             await installer.install(app)
         finally:
-            self._client.set_message_handler(None)
+            self._client.set_message_handler(self._on_unsolicited)
 
     async def _blobdb(self, payload: bytes, what: str,
                       timeout: float = 15.0) -> None:
@@ -338,6 +352,17 @@ class PebbleDevice(Device):
             encode_blobdb_insert(self._blob_token(), BLOB_DB_NOTIFICATION,
                                  key, value),
             "notification insert", timeout=10.0)
+
+    async def push_now_playing(self, track) -> None:
+        """Update the Music app: track info then play state."""
+        if self._client is None or not self._client.is_link_open:
+            raise RuntimeError("PPoGATT link is not open")
+        from vitals.devices.pebble.music import (
+            ENDPOINT_MUSIC, encode_music_info, encode_play_state)
+        self._client.send_message(ENDPOINT_MUSIC, encode_music_info(
+            track.artist, track.album, track.track, track.duration_s))
+        self._client.send_message(ENDPOINT_MUSIC, encode_play_state(
+            track.playing, track.position_s))
 
     async def push_calendar(self, events, stale_pin_ids) -> None:
         """Reconcile the timeline's calendar pins (BlobDB db 1): delete
@@ -578,7 +603,7 @@ class PebbleDevice(Device):
             log.exception("Pebble: health collection failed")
             self._health_sessions = {}
         finally:
-            self._client.set_message_handler(None)
+            self._client.set_message_handler(self._on_unsolicited)
         return self._health_sessions
 
     async def get_device_info(self) -> dict[str, str]:

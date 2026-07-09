@@ -5,6 +5,7 @@ python.install_sources(
     'main.py',
     'alarms.py',
     'calendar.py',
+    'mpris.py',
     'notifications.py',
     'application.py',
     'background_portal.py',
@@ -73,6 +74,7 @@ python.install_sources(
   files(
     'devices/pebble/__init__.py',
     'devices/pebble/fw_update.py',
+    'devices/pebble/music.py',
     'devices/pebble/pbw.py',
     'devices/pebble/pebble.py',
     'devices/pebble/pebble_appinstall.py',

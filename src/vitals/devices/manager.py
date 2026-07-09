@@ -84,6 +84,8 @@ class DeviceManager(GObject.Object):
         # (address, connected) — a persistent link went up or down.
         "link-state-changed": (GObject.SignalFlags.RUN_FIRST, None,
                                (str, bool)),
+        # (address, command) — a watch pressed a playback button.
+        "music-command": (GObject.SignalFlags.RUN_FIRST, None, (str, str)),
     }
 
     def __init__(self, store, recorder, settings, ble, bluetooth=None):
@@ -230,6 +232,9 @@ class DeviceManager(GObject.Object):
         for address in want - have:
             entry = self._entries[address]
             device = entry.plugin(address=address, name=entry.name)
+            if entry.plugin.SUPPORTS_MUSIC_CONTROL:
+                device.set_music_command_handler(
+                    lambda cmd, a=address: self._on_music_command(a, cmd))
             keeper = ConnectionKeeper(device, on_state=self._on_link_state)
             self._keepers[address] = keeper
             self._ble.submit(keeper.start())
@@ -253,6 +258,28 @@ class DeviceManager(GObject.Object):
         # Called from the BLE loop.
         GLib.idle_add(lambda: (self.emit("link-state-changed", address,
                                          connected), False)[1])
+
+    def _on_music_command(self, address: str, command: str) -> None:
+        # Called from the BLE loop by the plugin's transport.
+        GLib.idle_add(lambda: (self.emit("music-command", address, command),
+                               False)[1])
+
+    def push_now_playing(self, track, address: str | None = None) -> int:
+        """Send a NowPlaying snapshot to every connected music-capable
+        link (or just `address`). Returns how many pushes started."""
+        started = 0
+        for addr, keeper in self._keepers.items():
+            entry = self._entries.get(addr)
+            if (not keeper.connected or entry is None
+                    or entry.plugin is None
+                    or not entry.plugin.SUPPORTS_MUSIC_CONTROL
+                    or (address is not None and addr != address)):
+                continue
+            future = self._ble.submit(keeper.run(
+                lambda device, t=track: device.push_now_playing(t)))
+            future.add_done_callback(_log_notification_result)
+            started += 1
+        return started
 
     def forward_notification(self, note) -> int:
         """Push one desktop notification to every connected watch link.
