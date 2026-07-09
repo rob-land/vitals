@@ -435,9 +435,7 @@ class DeviceManager(GObject.Object):
             forecast = await asyncio.to_thread(
                 weather_mod.fetch_forecast, lat, lon, name, unit,
                 int(time.time()))
-            await device.push_weather(
-                weather_mod.location_key(lat, lon),
-                weather_mod.serialize_entry(forecast))
+            await device.push_weather(forecast)
             log.info("sync: weather pushed (%s)", name)
         except Exception:
             log.exception("sync: weather push failed")

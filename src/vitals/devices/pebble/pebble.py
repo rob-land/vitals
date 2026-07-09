@@ -138,12 +138,11 @@ class PebbleDevice(Device):
         "setup screen is fine — you'll be offered to set it up.",
     ]
 
-    # Time sync, activity (steps/HR), and firmware flashing ride the
-    # PPoGATT transport (PebbleGateway). Alarms and notifications are not
-    # wired yet.
+    # Everything rides the PPoGATT transport (PebbleGateway). Alarms are
+    # watch-local on Pebble, so alarm push stays off by design.
     SUPPORTS_TIME_SYNC       = True
     SUPPORTS_ALARM_PUSH      = False
-    SUPPORTS_NOTIFICATIONS   = False
+    SUPPORTS_NOTIFICATIONS   = True
     SUPPORTS_ACTIVITY_READ   = True
     SUPPORTS_SLEEP_READ      = True
     SUPPORTS_WORKOUT_READ    = True
@@ -283,24 +282,61 @@ class PebbleDevice(Device):
         finally:
             self._client.set_message_handler(None)
 
-    async def push_weather(self, key: bytes, value: bytes) -> None:
-        """Insert one serialized weather record into the watch's weather
-        BlobDB (id 0x05) so the built-in Weather app can show it."""
+    async def _blobdb(self, payload: bytes, what: str,
+                      timeout: float = 15.0) -> None:
+        """One BlobDB command over the open link, checked for success."""
         if self._client is None or not self._client.is_link_open:
             raise RuntimeError("PPoGATT link is not open")
         from vitals.devices.pebble.pebble_appinstall import (
-            BLOB_SUCCESS, EP_BLOBDB, encode_blobdb_insert,
-            parse_blob_response)
-        self._weather_token = (getattr(self, "_weather_token", 0) + 1) & 0xFFFF
-        resp = await self._client.request(
-            EP_BLOBDB,
-            encode_blobdb_insert(self._weather_token, BLOB_DB_WEATHER,
-                                 key, value),
-            EP_BLOBDB, timeout=15.0)
+            BLOB_SUCCESS, EP_BLOBDB, parse_blob_response)
+        resp = await self._client.request(EP_BLOBDB, payload, EP_BLOBDB,
+                                          timeout=timeout)
         _token, status = parse_blob_response(resp)
         if status != BLOB_SUCCESS:
-            raise RuntimeError(f"weather BlobDB insert failed (status {status})")
-        log.info("Pebble: weather record stored (%d bytes)", len(value))
+            raise RuntimeError(f"{what} failed (BlobDB status {status})")
+
+    def _blob_token(self) -> int:
+        self._blob_token_counter = (
+            getattr(self, "_blob_token_counter", 0) + 1) & 0xFFFF
+        return self._blob_token_counter
+
+    async def push_weather(self, forecast) -> None:
+        """Store the forecast in the watch's weather database *and*
+        enrol the location in the Weather app's settings entry — the
+        app only displays enrolled locations, which is why records
+        stored under arbitrary keys never appeared."""
+        from vitals.devices.pebble.pebble_appinstall import (
+            BLOB_DB_APPSETTINGS, encode_blobdb_clear, encode_blobdb_insert)
+        from vitals.devices.pebble.pebble_weather import (
+            UUID_PRIMARY_LOCATION, WEATHER_APP_SETTINGS_KEY,
+            encode_app_settings, serialize_entry)
+        # Clear first: it also removes invisible tock-era entries stored
+        # under the old derived keys.
+        await self._blobdb(
+            encode_blobdb_clear(self._blob_token(), BLOB_DB_WEATHER),
+            "weather clear")
+        value = serialize_entry(forecast)
+        await self._blobdb(
+            encode_blobdb_insert(self._blob_token(), BLOB_DB_WEATHER,
+                                 UUID_PRIMARY_LOCATION.bytes, value),
+            "weather insert")
+        await self._blobdb(
+            encode_blobdb_insert(self._blob_token(), BLOB_DB_APPSETTINGS,
+                                 WEATHER_APP_SETTINGS_KEY,
+                                 encode_app_settings()),
+            "weather app enrolment")
+        log.info("Pebble: weather stored + enrolled (%d bytes)", len(value))
+
+    async def push_notification(self, note) -> None:
+        """Show one forwarded notification via the notification BlobDB."""
+        from vitals.devices.pebble.pebble_appinstall import (
+            BLOB_DB_NOTIFICATION, encode_blobdb_insert)
+        from vitals.devices.pebble.timeline import encode_notification
+        key, value = encode_notification(note)
+        await self._blobdb(
+            encode_blobdb_insert(self._blob_token(), BLOB_DB_NOTIFICATION,
+                                 key, value),
+            "notification insert", timeout=10.0)
 
     async def fetch_default_firmware(
             self, variant: str = PEBBLE_FW_DEFAULT_VARIANT,

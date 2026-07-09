@@ -49,6 +49,59 @@ _BANGLE_FW_URL = "https://www.espruino.com/binaries/espruino_{version}_banglejs2
 _BANGLE_FW_DEFAULT_VERSION = "2v27"
 
 
+# Gadgetbridge-protocol messages (`GB({...})`) are written raw to the
+# UART with 0x10 ("echo off for this line") — the watch's GB() handler
+# consumes them; there's no REPL response to wait for. Payloads chunk
+# to the default 20-byte MTU. ensure_ascii keeps them 8-bit safe.
+_GB_CHUNK = 20
+# Field caps from Gadgetbridge's Bangle support.
+_GB_TITLE_MAX = 80
+_GB_BODY_MAX = 400
+_GB_SRC_MAX = 40
+
+# Neutral condition kind -> OpenWeatherMap condition id (what Bangle
+# weather apps key their icons on).
+_OWM_CODE = {
+    "clear": 800, "partly": 802, "cloudy": 804, "fog": 741,
+    "drizzle": 300, "rain": 500, "heavy_rain": 502, "sleet": 611,
+    "snow": 600, "heavy_snow": 602, "thunderstorm": 200, "unknown": 800,
+}
+
+
+def gb_message(obj: dict) -> bytes:
+    js = json.dumps(obj, separators=(",", ":"), ensure_ascii=True)
+    return ("\x10GB(" + js + ")\n").encode("ascii")
+
+
+def gb_notify(note) -> dict:
+    return {"t": "notify", "id": int(note.id),
+            "src": note.app_name[:_GB_SRC_MAX],
+            "title": note.title[:_GB_TITLE_MAX],
+            "body": note.body[:_GB_BODY_MAX]}
+
+
+def gb_weather(forecast) -> dict:
+    """The v1 GB weather shape: temperature in Kelvin (raw), wind km/h."""
+    today = forecast.day(0)
+    msg: dict = {"t": "weather", "v": 1,
+                 "code": _OWM_CODE.get(forecast.kind, 800),
+                 "txt": forecast.phrase,
+                 "loc": forecast.location_name}
+
+    def kelvin(c):
+        return round(c + 273.15) if isinstance(c, (int, float)) else None
+
+    for key, value in (("temp", kelvin(forecast.temp_c)),
+                       ("hi", kelvin(today.high_c if today else None)),
+                       ("lo", kelvin(today.low_c if today else None)),
+                       ("hum", forecast.humidity),
+                       ("wind", forecast.wind_kmh),
+                       ("wdir", forecast.wind_dir_deg)):
+        if value is not None:
+            msg[key] = value
+    return msg
+
+
 def _looks_like_espruino_error(response: str) -> bool:
     """Heuristic: did Espruino throw on the line we just sent?
 
@@ -82,6 +135,8 @@ class BangleDevice(Device):
     SUPPORTS_ALARM_PUSH    = True
     SUPPORTS_ACTIVITY_READ = True
     SUPPORTS_APP_INSTALL   = True
+    SUPPORTS_NOTIFICATIONS = True
+    SUPPORTS_WEATHER_PUSH  = True
     # Firmware updates run over Nordic DFU, which the user enters with a
     # physical long-press (Espruino disables remote DFU entry).
     SUPPORTS_FIRMWARE_UPDATE   = True
@@ -189,6 +244,26 @@ class BangleDevice(Device):
     def _on_notify(self, _char, data: bytearray) -> None:
         self._buffer.extend(data)
         self._response_event.set()
+
+    async def _send_gb(self, obj: dict) -> None:
+        """Write one Gadgetbridge-protocol message raw (no REPL echo,
+        nothing to wait for), chunked to the default MTU."""
+        if self._client is None:
+            raise RuntimeError("not connected")
+        payload = gb_message(obj)
+        for i in range(0, len(payload), _GB_CHUNK):
+            await self._client.write_gatt_char(
+                TX_UUID, payload[i:i + _GB_CHUNK])
+
+    async def push_notification(self, note) -> None:
+        """Forward one banner via the Bangle's GB() protocol (rendered
+        by the stock 'Android Integration' messages app)."""
+        await self._send_gb(gb_notify(note))
+
+    async def push_weather(self, forecast) -> None:
+        """Send current conditions in the GB v1 weather shape; the
+        stock weather widget/app stores and shows it."""
+        await self._send_gb(gb_weather(forecast))
 
     # ── Feature methods ────────────────────────────────────────────
 

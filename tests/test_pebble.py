@@ -160,7 +160,7 @@ def test_parse_battery_level_empty_or_none():
 def test_capabilities():
     assert PebbleDevice.SUPPORTS_TIME_SYNC is True
     assert PebbleDevice.SUPPORTS_ALARM_PUSH is False
-    assert PebbleDevice.SUPPORTS_NOTIFICATIONS is False
+    assert PebbleDevice.SUPPORTS_NOTIFICATIONS is True
     assert PebbleDevice.SUPPORTS_ACTIVITY_READ is True
     assert PebbleDevice.SUPPORTS_FIRMWARE_UPDATE is True
 

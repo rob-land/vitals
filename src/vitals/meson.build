@@ -77,6 +77,8 @@ python.install_sources(
     'devices/pebble/pebble_appinstall.py',
     'devices/pebble/pebble_health.py',
     'devices/pebble/pebble_store.py',
+    'devices/pebble/pebble_weather.py',
+    'devices/pebble/timeline.py',
     'devices/pebble/ppogatt.py',
     'devices/pebble/protobuf_log.py',
   ),

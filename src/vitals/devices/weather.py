@@ -1,105 +1,67 @@
-"""Pebble weather — fetch a forecast and serialize it for the watch.
+"""Watch-agnostic weather — fetch a forecast and map conditions.
 
-The Pebble's built-in Weather app reads from a watch-side BlobDB (database
-id 0x05, ``BlobDBIdWeather``) that the phone fills in. We fetch a forecast
-from **Open-Meteo** (free, no API key), map it onto the firmware's
-``WeatherDBEntry`` (version 3) and hand the bytes to the Pebble plugin,
-which inserts them over the existing BlobDB transport.
+Fetches a 5-day forecast from **Open-Meteo** (free, no API key),
+always in °C, and normalises the WMO condition code to a neutral
+``kind`` string. Each watch plugin serializes the resulting
+``Forecast`` into its own wire format — Pebble WeatherDB entries
+(``devices/pebble/pebble_weather.py``), InfiniTime's
+SimpleWeatherService structs, Bangle.js GB JSON — converting units as
+it goes; ``display_unit`` records the user's preference for watches
+that render the number as-is.
 
-The watch renders the temperature as a bare ``"%i°"`` — no unit
-conversion — so we request the forecast from Open-Meteo already in the
-user's chosen unit and send the integer as-is.
-
-Wire format (``include/pbl/services/blob_db/weather_db.h``, packed,
-little-endian):
-
-  key   = 16-byte Uuid (one per location)
-  value = version:u8(=3), current_temp:i16, current_type:u8,
-          today_high:i16, today_low:i16, tomorrow_type:u8,
-          tomorrow_high:i16, tomorrow_low:i16, last_update_utc:i32 (time_t),
-          is_current_location:u8, then a SerializedArray of two
-          PascalString16s — location name and a short phrase:
-              data_size:u16, then {str_len:u16 + bytes} × 2
-
-The parsing/serialization here is pure and unit-tested; the HTTP calls run
-off the main thread (the caller handles that). The time field is a 4-byte
-``time_t`` — the firmware static-asserts ``sizeof(time_t) == 4`` (and
-builds with ``-D_USE_LONG_TIME_T``), so this is exact, not assumed.
+Parsing and mapping are pure and unit-tested; the HTTP calls run off
+the main thread (the caller handles that).
 """
 
 from __future__ import annotations
 
 import json
 import logging
-import struct
 import urllib.parse
 import urllib.request
-import uuid
 from dataclasses import dataclass
 
 log = logging.getLogger(__name__)
 
-WEATHER_DB_VERSION = 3
-# WEATHER_SERVICE_LOCATION_FORECAST_UNKNOWN_TEMP — INT16_MAX.
-UNKNOWN_TEMP = 0x7FFF
-# Buffer caps from weather_service.h (bytes incl. the null the watch adds).
-_MAX_LOCATION = 63
-_MAX_PHRASE = 31
-
-# WeatherType enum (weather_type_tuples.def).
-WT_PARTLY_CLOUDY = 0
-WT_CLOUDY_DAY    = 1
-WT_LIGHT_SNOW    = 2
-WT_LIGHT_RAIN    = 3
-WT_HEAVY_RAIN    = 4
-WT_HEAVY_SNOW    = 5
-WT_GENERIC       = 6
-WT_SUN           = 7
-WT_RAIN_AND_SNOW = 8
-WT_UNKNOWN       = 255
-
-# WMO weather-interpretation code (Open-Meteo) -> (WeatherType, short phrase).
-_WMO: dict[int, tuple[int, str]] = {
-    0:  (WT_SUN, "Clear"),
-    1:  (WT_SUN, "Mainly Clear"),
-    2:  (WT_PARTLY_CLOUDY, "Partly Cloudy"),
-    3:  (WT_CLOUDY_DAY, "Cloudy"),
-    45: (WT_GENERIC, "Fog"),
-    48: (WT_GENERIC, "Rime Fog"),
-    51: (WT_LIGHT_RAIN, "Light Drizzle"),
-    53: (WT_LIGHT_RAIN, "Drizzle"),
-    55: (WT_LIGHT_RAIN, "Heavy Drizzle"),
-    56: (WT_RAIN_AND_SNOW, "Freezing Drizzle"),
-    57: (WT_RAIN_AND_SNOW, "Freezing Drizzle"),
-    61: (WT_LIGHT_RAIN, "Light Rain"),
-    63: (WT_LIGHT_RAIN, "Rain"),
-    65: (WT_HEAVY_RAIN, "Heavy Rain"),
-    66: (WT_RAIN_AND_SNOW, "Freezing Rain"),
-    67: (WT_RAIN_AND_SNOW, "Freezing Rain"),
-    71: (WT_LIGHT_SNOW, "Light Snow"),
-    73: (WT_LIGHT_SNOW, "Snow"),
-    75: (WT_HEAVY_SNOW, "Heavy Snow"),
-    77: (WT_LIGHT_SNOW, "Snow Grains"),
-    80: (WT_LIGHT_RAIN, "Light Showers"),
-    81: (WT_LIGHT_RAIN, "Showers"),
-    82: (WT_HEAVY_RAIN, "Heavy Showers"),
-    85: (WT_LIGHT_SNOW, "Snow Showers"),
-    86: (WT_HEAVY_SNOW, "Snow Showers"),
-    95: (WT_HEAVY_RAIN, "Thunderstorm"),
-    96: (WT_HEAVY_RAIN, "Thunderstorm"),
-    99: (WT_HEAVY_RAIN, "Thunderstorm"),
+# Neutral condition kinds every watch backend maps from:
+#   clear, partly, cloudy, fog, drizzle, rain, heavy_rain, sleet,
+#   snow, heavy_snow, thunderstorm, unknown
+# WMO weather-interpretation code (Open-Meteo) -> (kind, short phrase).
+_WMO: dict[int, tuple[str, str]] = {
+    0:  ("clear", "Clear"),
+    1:  ("clear", "Mainly Clear"),
+    2:  ("partly", "Partly Cloudy"),
+    3:  ("cloudy", "Cloudy"),
+    45: ("fog", "Fog"),
+    48: ("fog", "Rime Fog"),
+    51: ("drizzle", "Light Drizzle"),
+    53: ("drizzle", "Drizzle"),
+    55: ("drizzle", "Heavy Drizzle"),
+    56: ("sleet", "Freezing Drizzle"),
+    57: ("sleet", "Freezing Drizzle"),
+    61: ("rain", "Light Rain"),
+    63: ("rain", "Rain"),
+    65: ("heavy_rain", "Heavy Rain"),
+    66: ("sleet", "Freezing Rain"),
+    67: ("sleet", "Freezing Rain"),
+    71: ("snow", "Light Snow"),
+    73: ("snow", "Snow"),
+    75: ("heavy_snow", "Heavy Snow"),
+    77: ("snow", "Snow Grains"),
+    80: ("rain", "Light Showers"),
+    81: ("rain", "Showers"),
+    82: ("heavy_rain", "Heavy Showers"),
+    85: ("snow", "Snow Showers"),
+    86: ("heavy_snow", "Snow Showers"),
+    95: ("thunderstorm", "Thunderstorm"),
+    96: ("thunderstorm", "Thunderstorm"),
+    99: ("thunderstorm", "Thunderstorm"),
 }
-
-# Stable namespace so one configured location maps to one BlobDB key (a new
-# city overwrites the same watch entry rather than piling up).
-# Kept verbatim from tock: these seed the deterministic BlobDB keys on
-# the watch, and changing the namespace would orphan every weather entry
-# a tock-era sync already stored there.
-_KEY_NAMESPACE = uuid.uuid5(uuid.NAMESPACE_DNS, "weather.tock.rob.land")
 
 _GEOCODE_URL = "https://geocoding-api.open-meteo.com/v1/search"
 _FORECAST_URL = "https://api.open-meteo.com/v1/forecast"
 _TIMEOUT = 15.0
+FORECAST_DAYS = 5
 
 
 @dataclass(frozen=True)
@@ -110,59 +72,45 @@ class GeoResult:
 
 
 @dataclass(frozen=True)
+class DayForecast:
+    kind: str
+    high_c: float | None
+    low_c: float | None
+
+
+@dataclass(frozen=True)
 class Forecast:
+    """A normalised forecast, temperatures in °C. ``days[0]`` is today."""
     location_name: str
-    short_phrase: str
-    current_type: int
-    current_temp: int
-    today_high: int
-    today_low: int
-    tomorrow_type: int
-    tomorrow_high: int
-    tomorrow_low: int
+    kind: str
+    phrase: str
+    temp_c: float | None
+    humidity: int | None
+    wind_kmh: float | None
+    wind_dir_deg: int | None
+    days: tuple[DayForecast, ...]
     update_time_utc: int
+    display_unit: str = "celsius"   # "celsius" | "fahrenheit"
+
+    def day(self, index: int) -> DayForecast | None:
+        return self.days[index] if index < len(self.days) else None
 
 
-# ── pure mapping / serialization ───────────────────────────────────
+# ── pure mapping helpers ───────────────────────────────────────────
 
-def wmo_to_type_and_phrase(code: int) -> tuple[int, str]:
-    """Map an Open-Meteo WMO code to a Pebble WeatherType + short phrase."""
-    return _WMO.get(code, (WT_GENERIC, "—"))
-
-
-def _temp(value) -> int:
-    """Round a temperature to the watch's int16, or the unknown sentinel."""
-    if not isinstance(value, (int, float)):
-        return UNKNOWN_TEMP
-    return max(-32768, min(32767, round(value)))
+def wmo_to_kind(code) -> tuple[str, str]:
+    """Map an Open-Meteo WMO code to (neutral kind, short phrase)."""
+    if code is None:
+        return "unknown", "—"
+    return _WMO.get(int(code), ("unknown", "—"))
 
 
-def location_key(latitude: float, longitude: float) -> bytes:
-    """A stable 16-byte BlobDB key for a location."""
-    name = f"{latitude:.4f},{longitude:.4f}"
-    return uuid.uuid5(_KEY_NAMESPACE, name).bytes
-
-
-def serialize_entry(forecast: Forecast, is_current_location: bool = True) -> bytes:
-    """Serialize a forecast into a WeatherDBEntry blob (see module docstring)."""
-    location = forecast.location_name.encode("utf-8")[:_MAX_LOCATION]
-    phrase = forecast.short_phrase.encode("utf-8")[:_MAX_PHRASE]
-    strings = (struct.pack("<H", len(location)) + location
-               + struct.pack("<H", len(phrase)) + phrase)
-    return struct.pack(
-        "<BhBhhBhhiBH",
-        WEATHER_DB_VERSION,
-        _temp(forecast.current_temp),
-        forecast.current_type & 0xFF,
-        _temp(forecast.today_high),
-        _temp(forecast.today_low),
-        forecast.tomorrow_type & 0xFF,
-        _temp(forecast.tomorrow_high),
-        _temp(forecast.tomorrow_low),
-        int(forecast.update_time_utc) & 0xFFFFFFFF,
-        1 if is_current_location else 0,
-        len(strings),
-    ) + strings
+def to_display(celsius: float | None, unit: str) -> int | None:
+    """°C → a rounded integer in the display unit, None passing through."""
+    if not isinstance(celsius, (int, float)):
+        return None
+    value = celsius * 9 / 5 + 32 if unit == "fahrenheit" else celsius
+    return round(value)
 
 
 # ── response parsing (pure) ────────────────────────────────────────
@@ -180,43 +128,49 @@ def parse_geocode(data: dict) -> list[GeoResult]:
     return out
 
 
-def parse_forecast(data: dict, location_name: str, now_utc: int) -> Forecast:
-    """Build a Forecast from an Open-Meteo forecast response."""
+def _number(value) -> float | None:
+    return float(value) if isinstance(value, (int, float)) else None
+
+
+def parse_forecast(data: dict, location_name: str, now_utc: int,
+                   display_unit: str = "celsius") -> Forecast:
+    """Build a Forecast from an Open-Meteo forecast response (°C)."""
     current = data.get("current") or {}
     daily = data.get("daily") or {}
     codes = daily.get("weather_code") or []
     highs = daily.get("temperature_2m_max") or []
     lows = daily.get("temperature_2m_min") or []
 
-    def day(idx: int):
-        code = codes[idx] if idx < len(codes) else None
-        wtype = wmo_to_type_and_phrase(code)[0] if code is not None else WT_UNKNOWN
-        high = highs[idx] if idx < len(highs) else None
-        low = lows[idx] if idx < len(lows) else None
-        return wtype, high, low
+    days = []
+    for i in range(min(FORECAST_DAYS, len(codes))):
+        kind, _ = wmo_to_kind(codes[i])
+        days.append(DayForecast(
+            kind=kind,
+            high_c=_number(highs[i]) if i < len(highs) else None,
+            low_c=_number(lows[i]) if i < len(lows) else None))
 
     cur_code = current.get("weather_code")
-    cur_type, phrase = (wmo_to_type_and_phrase(cur_code)
-                        if cur_code is not None else (WT_UNKNOWN, "—"))
-    today_type, today_high, today_low = day(0)
-    tomorrow_type, tomorrow_high, tomorrow_low = day(1)
-    # The current condition drives the headline icon/phrase; fall back to
-    # today's daily code if there's no current code.
-    if cur_code is None:
-        cur_type, phrase = today_type, wmo_to_type_and_phrase(
-            codes[0])[1] if codes else "—"
+    if cur_code is not None:
+        kind, phrase = wmo_to_kind(cur_code)
+    elif codes:
+        # No current condition — fall back to today's daily code.
+        kind, phrase = wmo_to_kind(codes[0])
+    else:
+        kind, phrase = "unknown", "—"
 
+    humidity = _number(current.get("relative_humidity_2m"))
+    wind_dir = _number(current.get("wind_direction_10m"))
     return Forecast(
         location_name=location_name,
-        short_phrase=phrase,
-        current_type=cur_type,
-        current_temp=_temp(current.get("temperature_2m")),
-        today_high=_temp(today_high),
-        today_low=_temp(today_low),
-        tomorrow_type=tomorrow_type,
-        tomorrow_high=_temp(tomorrow_high),
-        tomorrow_low=_temp(tomorrow_low),
+        kind=kind,
+        phrase=phrase,
+        temp_c=_number(current.get("temperature_2m")),
+        humidity=round(humidity) if humidity is not None else None,
+        wind_kmh=_number(current.get("wind_speed_10m")),
+        wind_dir_deg=round(wind_dir) if wind_dir is not None else None,
+        days=tuple(days),
         update_time_utc=now_utc,
+        display_unit=display_unit,
     )
 
 
@@ -230,18 +184,21 @@ def geocode(query: str, limit: int = 8) -> list[GeoResult]:
 
 def fetch_forecast(latitude: float, longitude: float, location_name: str,
                    unit: str, now_utc: int) -> Forecast:
-    """Fetch a 2-day forecast. `unit` is "fahrenheit" or "celsius"."""
+    """Fetch a 5-day forecast (°C). `unit` only tags the user's display
+    preference — see ``Forecast.display_unit``."""
     params = urllib.parse.urlencode({
         "latitude": latitude,
         "longitude": longitude,
-        "current": "temperature_2m,weather_code",
+        "current": "temperature_2m,relative_humidity_2m,weather_code,"
+                   "wind_speed_10m,wind_direction_10m",
         "daily": "weather_code,temperature_2m_max,temperature_2m_min",
-        "temperature_unit": "fahrenheit" if unit == "fahrenheit" else "celsius",
-        "forecast_days": 2,
+        "forecast_days": FORECAST_DAYS,
         "timezone": "auto",
     })
     data = _get_json(f"{_FORECAST_URL}?{params}")
-    return parse_forecast(data, location_name, now_utc)
+    return parse_forecast(data, location_name, now_utc,
+                          display_unit=("fahrenheit" if unit == "fahrenheit"
+                                        else "celsius"))
 
 
 def _get_json(url: str) -> dict:

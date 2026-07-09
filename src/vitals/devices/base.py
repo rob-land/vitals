@@ -394,9 +394,9 @@ class Device(abc.ABC):
         raise NotImplementedError(
             f"{self.display_name} does not support notifications")
 
-    async def push_weather(self, key: bytes, value: bytes) -> None:
-        """Store one serialized weather record on the watch, keyed by
-        `key` (see `vitals.devices.weather`). Default raises
+    async def push_weather(self, forecast) -> None:
+        """Store a ``vitals.devices.weather.Forecast`` on the watch, in
+        whatever wire format this family uses. Default raises
         NotImplementedError; subclasses that flip SUPPORTS_WEATHER_PUSH=True
         override it."""
         raise NotImplementedError(

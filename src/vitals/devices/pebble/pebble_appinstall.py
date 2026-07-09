@@ -40,7 +40,12 @@ EP_APP_FETCH     = 0x1771
 
 # BlobDB.
 BLOB_INSERT   = 0x01
-BLOB_DB_APP   = 0x02
+BLOB_DELETE   = 0x04
+BLOB_CLEAR    = 0x05
+BLOB_DB_PIN          = 0x01
+BLOB_DB_APP          = 0x02
+BLOB_DB_NOTIFICATION = 0x04
+BLOB_DB_APPSETTINGS  = 0x09
 BLOB_SUCCESS  = 0x01
 
 # AppRunState / AppFetch.
@@ -79,6 +84,17 @@ def encode_blobdb_insert(token: int, database: int, key: bytes,
     return (struct.pack("<BHB", BLOB_INSERT, token & 0xFFFF, database)
             + bytes([len(key)]) + key
             + struct.pack("<H", len(value)) + value)
+
+
+def encode_blobdb_delete(token: int, database: int, key: bytes) -> bytes:
+    """A BlobDB Delete command: command, token, db, key_size, key."""
+    return (struct.pack("<BHB", BLOB_DELETE, token & 0xFFFF, database)
+            + bytes([len(key)]) + key)
+
+
+def encode_blobdb_clear(token: int, database: int) -> bytes:
+    """A BlobDB Clear command: command, token, db."""
+    return struct.pack("<BHB", BLOB_CLEAR, token & 0xFFFF, database)
 
 
 def parse_blob_response(payload: bytes) -> tuple[int, int]:

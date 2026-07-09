@@ -145,12 +145,13 @@ class VitalsPreferences(Adw.PreferencesDialog):
         threading.Thread(target=work, name="vitals-export",
                          daemon=True).start()
 
-    # ── Weather group (Pebble forecast push) ──────────────────────
+    # ── Weather group (forecast push to watches) ──────────────────
     def _weather_group(self) -> Adw.PreferencesGroup:
         group = Adw.PreferencesGroup(
             title="Weather",
-            description="Send a forecast to the watch's Weather app, via "
-                        "Open-Meteo (no account needed).")
+            description="Send a forecast to your watches on every sync "
+                        "(Pebble, PineTime, Bangle.js), via Open-Meteo — "
+                        "no account needed.")
 
         enable = Adw.SwitchRow(title="Weather sync",
                                subtitle="Update the forecast on every sync")
