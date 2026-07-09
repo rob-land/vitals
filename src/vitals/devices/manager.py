@@ -38,6 +38,9 @@ ROLE_SENSOR = "sensor"
 # Concurrent BLE connect attempts (not open connections).
 _MAX_CONCURRENT_CONNECTS = 2
 
+# Upper bound on calendar events pinned to a watch timeline per sync.
+_MAX_CALENDAR_PINS = 50
+
 # Sensor-quality tiers → numeric trust for cross-source resolution.
 _QUALITY_SCORE = {"high": 30, "medium": 20, "low": 10}
 _DEFAULT_QUALITY = _QUALITY_SCORE["medium"]
@@ -295,9 +298,10 @@ class DeviceManager(GObject.Object):
             }
 
         self._set_state(address, "syncing")
+        pushed_pins = frozenset(entry.settings.get("pushed_pin_ids", []))
         future = self._ble.submit(self._run_sync(
             device, plugin, sync_time, push_alarms, alarms, previously_pushed,
-            monitoring))
+            monitoring, pushed_pins))
         future.add_done_callback(
             lambda f: GLib.idle_add(self._finish_sync, entry, f))
         return True
@@ -312,7 +316,8 @@ class DeviceManager(GObject.Object):
             return await coro_factory()
 
     async def _run_sync(self, device, plugin, sync_time, push_alarms,
-                        alarms, previously_pushed, monitoring=None) -> dict:
+                        alarms, previously_pushed, monitoring=None,
+                        pushed_pins=frozenset()) -> dict:
         keeper = self._keepers.get(device.address)
         if keeper is not None:
             # A persistent link already owns this watch (and with it the
@@ -322,15 +327,18 @@ class DeviceManager(GObject.Object):
             return await keeper.run(
                 lambda live: self._sync_steps(live, plugin, sync_time,
                                               push_alarms, alarms,
-                                              previously_pushed, monitoring))
+                                              previously_pushed, monitoring,
+                                              pushed_pins))
         return await self._guarded(
             lambda: self._sync_pipeline(device, plugin, sync_time,
                                         push_alarms, alarms,
-                                        previously_pushed, monitoring),
+                                        previously_pushed, monitoring,
+                                        pushed_pins),
             plugin.EXCLUSIVE_TRANSPORT)
 
     async def _sync_pipeline(self, device, plugin, sync_time, push_alarms,
-                             alarms, previously_pushed, monitoring=None) -> dict:
+                             alarms, previously_pushed, monitoring=None,
+                             pushed_pins=frozenset()) -> dict:
         """One full watch sync over a fresh connection: connect → the
         sync steps → disconnect."""
         if self._connect_sem is None:
@@ -344,12 +352,14 @@ class DeviceManager(GObject.Object):
                 await device.connect()
             return await self._sync_steps(device, plugin, sync_time,
                                           push_alarms, alarms,
-                                          previously_pushed, monitoring)
+                                          previously_pushed, monitoring,
+                                          pushed_pins)
         finally:
             await device.disconnect()
 
     async def _sync_steps(self, device, plugin, sync_time, push_alarms,
-                          alarms, previously_pushed, monitoring=None) -> dict:
+                          alarms, previously_pushed, monitoring=None,
+                          pushed_pins=frozenset()) -> dict:
         """The sync body, over an already-open link: time → config →
         alarms → battery → health reads → weather → sync() → ingest."""
         result: dict = {"battery": None, "warnings": [], "pushed_ids": None}
@@ -391,6 +401,9 @@ class DeviceManager(GObject.Object):
         if (plugin.SUPPORTS_WEATHER_PUSH and self._settings is not None
                 and self._settings.get_boolean("weather-enabled")):
             await self._push_weather(device, result)
+        if (plugin.SUPPORTS_CALENDAR_PUSH and self._settings is not None
+                and self._settings.get_boolean("calendar-sync-enabled")):
+            await self._push_calendar(device, result, pushed_pins)
         await device.sync()
 
         # Ingest scheduling is a cheap idle_add; the real write happens
@@ -441,6 +454,30 @@ class DeviceManager(GObject.Object):
             log.exception("sync: weather push failed")
             result["warnings"].append("weather update failed")
 
+    async def _push_calendar(self, device, result: dict,
+                             previously_pushed) -> None:
+        """Read upcoming phone-calendar events (off the BLE loop) and
+        reconcile the watch's pins. Failures warn, never abort."""
+        from vitals import calendar as cal_mod
+        try:
+            events = await asyncio.to_thread(cal_mod.read_events)
+        except cal_mod.CalendarUnavailable as exc:
+            result["warnings"].append(str(exc))
+            return
+        except Exception:
+            log.exception("sync: calendar read failed")
+            result["warnings"].append("calendar read failed")
+            return
+        events, current, stale = cal_mod.reconcile(
+            events[:_MAX_CALENDAR_PINS], set(previously_pushed))
+        try:
+            await device.push_calendar(events, sorted(stale))
+            result["pushed_pin_ids"] = sorted(current)
+            log.info("sync: calendar pinned (%d events)", len(events))
+        except Exception:
+            log.exception("sync: calendar push failed")
+            result["warnings"].append("calendar push failed")
+
     def _finish_sync(self, entry: DeviceEntry, future) -> bool:
         try:
             result = future.result()
@@ -454,6 +491,8 @@ class DeviceManager(GObject.Object):
         updates: dict = {}
         if result.get("pushed_ids") is not None:
             updates["pushed_alarm_ids"] = sorted(result["pushed_ids"])
+        if result.get("pushed_pin_ids") is not None:
+            updates["pushed_pin_ids"] = result["pushed_pin_ids"]
         if updates:
             self.update_settings(entry.address, updates)
         entry.last_sync_ms = round(time.time() * 1000)

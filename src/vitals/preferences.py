@@ -45,6 +45,11 @@ class VitalsPreferences(Adw.PreferencesDialog):
             "autostart-enabled")
         autostart.connect("notify::active", self._on_autostart)
         sync.add(autostart)
+        sync.add(self._switch_row(
+            "Calendar on the watch",
+            "Pin the next week of phone-calendar events to the watch "
+            "timeline on every sync",
+            "calendar-sync-enabled"))
 
         services = Adw.PreferencesGroup(
             title="Services",

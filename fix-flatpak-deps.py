@@ -178,7 +178,18 @@ def main():
     print(f"Scanning {path} for tarball sources to replace ({', '.join(arches)}) ...\n")
     replaced = walk(data, arches)
 
-    if replaced == 0:
+    # flatpak-builder ≥ 1.4.10 aborts on included manifests whose top
+    # level is an array (what flatpak_pip_generator emits) — wrap the
+    # module list in a single parent module. Idempotent.
+    wrapped = False
+    if isinstance(data, list):
+        data = {"name": "python3-deps", "buildsystem": "simple",
+                "build-commands": [], "modules": data}
+        wrapped = True
+        print("Wrapped module array in a parent module "
+              "(flatpak-builder include format).")
+
+    if replaced == 0 and not wrapped:
         print("\nNo tarballs needed replacing — nothing to do.")
         return
 

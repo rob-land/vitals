@@ -4,6 +4,7 @@ python.install_sources(
     '__main__.py',
     'main.py',
     'alarms.py',
+    'calendar.py',
     'notifications.py',
     'application.py',
     'background_portal.py',

@@ -11,6 +11,9 @@
     "--socket=wayland",
     "--device=dri",
     "--system-talk-name=org.bluez",
+    "--talk-name=org.gnome.evolution.dataserver.Sources5",
+    "--talk-name=org.gnome.evolution.dataserver.Calendar8",
+    "--talk-name=org.gnome.evolution.dataserver.Subprocess.Backend.*",
     "--filesystem=xdg-config/autostart:create",
     "--filesystem=xdg-data/pulse:ro",
     "--filesystem=~/.var/app/land.rob.pulse/data/pulse:ro"
@@ -25,6 +28,63 @@
     "*.a"
   ],
   "modules": [
+    {
+      "name": "libical",
+      "buildsystem": "cmake-ninja",
+      "cleanup": ["/lib/cmake"],
+      "config-opts": [
+        "-DCMAKE_BUILD_TYPE=Release",
+        "-DCMAKE_INSTALL_LIBDIR=lib",
+        "-DBUILD_SHARED_LIBS=ON",
+        "-DICAL_GLIB=true",
+        "-DGOBJECT_INTROSPECTION=true",
+        "-DICAL_GLIB_VAPI=false",
+        "-DICAL_BUILD_DOCS=false",
+        "-DLIBICAL_BUILD_TESTING=false",
+        "-DLIBICAL_BUILD_EXAMPLES=false"
+      ],
+      "sources": [
+        {
+          "type": "archive",
+          "url": "https://github.com/libical/libical/releases/download/v3.0.20/libical-3.0.20.tar.gz",
+          "sha256": "e73de92f5a6ce84c1b00306446b290a2b08cdf0a80988eca0a2c9d5c3510b4c2"
+        }
+      ]
+    },
+    {
+      "name": "evolution-data-server",
+      "buildsystem": "cmake-ninja",
+      "cleanup": [
+        "/lib/evolution-data-server/*-backends",
+        "/libexec",
+        "/share/dbus-1/services",
+        "/systemduserunitdir"
+      ],
+      "config-opts": [
+        "-DCMAKE_BUILD_TYPE=Release",
+        "-DENABLE_GTK=OFF",
+        "-DENABLE_GTK4=OFF",
+        "-DENABLE_GOA=OFF",
+        "-DENABLE_EXAMPLES=OFF",
+        "-DENABLE_INTROSPECTION=ON",
+        "-DENABLE_VALA_BINDINGS=OFF",
+        "-DENABLE_WEATHER=OFF",
+        "-DENABLE_CANBERRA=OFF",
+        "-DWITH_OPENLDAP=OFF",
+        "-DWITH_LIBDB=OFF",
+        "-DENABLE_INSTALLED_TESTS=OFF",
+        "-DENABLE_GTK_DOC=OFF",
+        "-DENABLE_OAUTH2_WEBKITGTK4=OFF",
+        "-DENABLE_DOT_LOCKING=OFF"
+      ],
+      "sources": [
+        {
+          "type": "archive",
+          "url": "https://download.gnome.org/sources/evolution-data-server/3.60/evolution-data-server-3.60.2.tar.xz",
+          "sha256": "2084dbdac396371b365d504c1ff45866ba8dca2f1252e5da1d3d9c33abdc1286"
+        }
+      ]
+    },
     {
       "name": "blueprint-compiler",
       "buildsystem": "meson",

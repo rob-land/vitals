@@ -42,6 +42,11 @@
       <default>false</default>
       <summary>Start in the background at login (via the portal)</summary>
     </key>
+    <key name="calendar-sync-enabled" type="b">
+      <default>false</default>
+      <summary>Pin upcoming calendar events to the watch timeline on each sync</summary>
+      <description>When enabled, Vitals reads the next week of events from the phone's calendars (Evolution Data Server) and pins them to watches that support a timeline or agenda.</description>
+    </key>
     <key name="weather-enabled" type="b">
       <default>false</default>
       <summary>Send a weather forecast to the watch on each sync</summary>

@@ -149,6 +149,7 @@ class PebbleDevice(Device):
     SUPPORTS_FIRMWARE_UPDATE = True
     SUPPORTS_APP_INSTALL     = True
     SUPPORTS_WEATHER_PUSH    = True
+    SUPPORTS_CALENDAR_PUSH   = True
 
     # The host-side PPoGATT GATT server can only exist once per process;
     # DeviceManager serializes anything sharing this transport name.
@@ -337,6 +338,35 @@ class PebbleDevice(Device):
             encode_blobdb_insert(self._blob_token(), BLOB_DB_NOTIFICATION,
                                  key, value),
             "notification insert", timeout=10.0)
+
+    async def push_calendar(self, events, stale_pin_ids) -> None:
+        """Reconcile the timeline's calendar pins (BlobDB db 1): delete
+        pins for vanished events, then upsert one pin per event (pins
+        are keyed by their uuid, so re-inserts update in place)."""
+        from vitals.calendar import pin_uuid
+        from vitals.devices.pebble.pebble_appinstall import (
+            BLOB_DB_PIN, encode_blobdb_delete, encode_blobdb_insert)
+        from vitals.devices.pebble.timeline import encode_pin
+        for stale in stale_pin_ids:
+            try:
+                await self._blobdb(
+                    encode_blobdb_delete(self._blob_token(), BLOB_DB_PIN,
+                                         bytes.fromhex(stale)),
+                    "pin delete", timeout=10.0)
+            except RuntimeError as exc:
+                # Already gone on the watch (KEY_DOES_NOT_EXIST) — fine.
+                log.debug("Pebble: pin delete skipped: %s", exc)
+        for event in events:
+            key, value = encode_pin(
+                pin_uuid(event), event.start_utc, event.duration_min,
+                event.title, body=event.description,
+                location=event.location)
+            await self._blobdb(
+                encode_blobdb_insert(self._blob_token(), BLOB_DB_PIN,
+                                     key, value),
+                "pin insert", timeout=10.0)
+        log.info("Pebble: calendar pins reconciled (%d current, %d removed)",
+                 len(events), len(stale_pin_ids))
 
     async def fetch_default_firmware(
             self, variant: str = PEBBLE_FW_DEFAULT_VARIANT,
