@@ -9,13 +9,15 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 
 from gi.repository import Adw, Gdk, Gio, Gtk
 
 from vitals.core.store import Store
 from vitals.format import format_value
 from vitals.pages import Page, local_day_start, local_tz_name, to_ms
+from vitals.trends import (
+    RECAP_METRICS, format_trend, recap_rows, staleness, weekly_trend)
 from vitals.widgets.charts import (
     ACCENT, ACCENT2, ActivityRing, BarChart, GroupedBarChart, LegendDot,
     LineChart)
@@ -27,10 +29,11 @@ _DAYS = 7  # bar-chart window, today inclusive
 
 class Dashboard(Page):
     def __init__(self, store: Store, settings: Gio.Settings,
-                 device_manager=None, catalog=None):
+                 device_manager=None, catalog=None, recorder=None):
         super().__init__()
         self._store = store
         self._settings = settings
+        self._recorder = recorder
         # Used to rank sources so overlapping metrics (e.g. heart rate
         # from a watch and a ring) resolve to one device rather than
         # double-counting or blending. None → legacy cross-source view.
@@ -53,6 +56,7 @@ class Dashboard(Page):
         self._build_weight_card()
         self._build_heart_card()
         self._build_sleep_card()
+        self._build_recap_card()
 
         for key in ("daily-step-goal", "water-goal-ml"):
             settings.connect(f"changed::{key}", lambda *_: self.refresh())
@@ -115,19 +119,37 @@ class Dashboard(Page):
         overlay.add_overlay(centre)
         return overlay
 
+    @staticmethod
+    def _caption_label(inner: Gtk.Box) -> Gtk.Label:
+        """A dim caption line that hides itself when empty (trend and
+        freshness notes)."""
+        label = Gtk.Label(xalign=0, wrap=True, visible=False)
+        label.add_css_class("caption")
+        label.add_css_class("dim-label")
+        inner.append(label)
+        return label
+
+    @staticmethod
+    def _set_caption(label: Gtk.Label, text: str) -> None:
+        label.set_label(text)
+        label.set_visible(bool(text))
+
     # ── cards ─────────────────────────────────────────────────────
     def _build_steps_card(self) -> None:
         inner = self._card("Steps", metric="step_count")
         self._steps_ring = ActivityRing()
         self._steps_value = Gtk.Label()
         self._steps_goal = Gtk.Label()
-        inner.append(self._ring_with_labels(
-            self._steps_ring, self._steps_value, "steps today", self._steps_goal))
+        self._steps_body = self._ring_with_labels(
+            self._steps_ring, self._steps_value, "steps today", self._steps_goal)
+        inner.append(self._steps_body)
         self._steps_source = Gtk.Label(xalign=0, wrap=True)
         self._steps_source.add_css_class("caption")
         inner.append(self._steps_source)
         self._steps_chart = BarChart()
         inner.append(self._steps_chart)
+        self._steps_trend = self._caption_label(inner)
+        self._steps_fresh = self._caption_label(inner)
 
     def _build_energy_card(self) -> None:
         inner = self._card("Calories", legend=[(ACCENT2, "Eaten"),
@@ -138,12 +160,24 @@ class Dashboard(Page):
         inner.append(self._energy_today)
         self._energy_chart = GroupedBarChart()
         inner.append(self._energy_chart)
+        self._energy_trend = self._caption_label(inner)
 
     def _build_meals_card(self) -> None:
         # A boxed list (its own card); each meal is an expandable row that
         # reveals the foods logged for it.
         self._meals_group = Adw.PreferencesGroup(title="Meals — today")
         self._meal_rows: list[Gtk.Widget] = []
+        # Copy a past day's meals onto today (same foods, same times).
+        copy_button = Gtk.MenuButton(
+            icon_name="edit-copy-symbolic", css_classes=["flat"],
+            valign=Gtk.Align.CENTER,
+            tooltip_text="Copy meals from another day")
+        self._copy_popover = Gtk.Popover()
+        self._copy_calendar = Gtk.Calendar()
+        self._copy_calendar.connect("day-selected", self._on_copy_day_picked)
+        self._copy_popover.set_child(self._copy_calendar)
+        copy_button.set_popover(self._copy_popover)
+        self._meals_group.set_header_suffix(copy_button)
         self._box.append(self._meals_group)
 
     def _build_water_card(self) -> None:
@@ -155,6 +189,7 @@ class Dashboard(Page):
             self._water_ring, self._water_value, "mL today", self._water_goal))
         self._water_chart = BarChart()
         inner.append(self._water_chart)
+        self._water_trend = self._caption_label(inner)
 
     def _build_weight_card(self) -> None:
         inner = self._card("Weight — 30 days", metric="body_weight")
@@ -172,6 +207,7 @@ class Dashboard(Page):
         inner.append(self._heart_source)
         self._heart_chart = LineChart()
         inner.append(self._heart_chart)
+        self._heart_fresh = self._caption_label(inner)
 
     def _build_sleep_card(self) -> None:
         inner = self._card("Last sleep")
@@ -181,6 +217,16 @@ class Dashboard(Page):
         self._sleep_detail.add_css_class("dim-label")
         inner.append(self._sleep_label)
         inner.append(self._sleep_detail)
+
+    def _build_recap_card(self) -> None:
+        inner = self._card("Last week")
+        self._recap_caption = Gtk.Label(xalign=0)
+        self._recap_caption.add_css_class("caption")
+        self._recap_caption.add_css_class("dim-label")
+        inner.append(self._recap_caption)
+        self._recap_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL,
+                                  spacing=8)
+        inner.append(self._recap_box)
 
     # ── data ──────────────────────────────────────────────────────
     def _trust(self, type_key: str) -> dict[str, int] | None:
@@ -226,6 +272,43 @@ class Dashboard(Page):
         else:
             label.set_label("")
 
+    def _day_values(self, type_key: str, op: str, start_day: int,
+                    end_day: int) -> list[float | None]:
+        """Daily buckets for [start_day, end_day) days back, oldest →
+        newest, None for days with nothing recorded."""
+        tz = local_tz_name()
+        buckets = self._store.aggregate(
+            type_key, op, "day", start_ms=to_ms(local_day_start(start_day)),
+            end_ms=to_ms(local_day_start(end_day)), tz=tz,
+            source_trust=self._trust(type_key),
+            value_range=self._range(type_key))
+        by_day = {b["start"][:10]: b["value"] for b in buckets}
+        keys = [local_day_start(d).date().isoformat()
+                for d in range(start_day, end_day, -1)]
+        return [by_day.get(k) for k in keys]
+
+    def _set_trend(self, label: Gtk.Label, type_key: str,
+                   prefix: str = "") -> None:
+        """An honest week-on-week caption: the last 7 *complete* days
+        against the 7 before (today, still in progress, is excluded)."""
+        text = format_trend(weekly_trend(self._day_values(type_key, "sum",
+                                                          14, 0)))
+        self._set_caption(label, f"{prefix}{text}" if text else "")
+
+    def _apply_freshness(self, types: list[str], label: Gtk.Label,
+                         *widgets) -> None:
+        """Fade a device-fed card's data widgets when its newest sample
+        has gone stale, and say how old it is."""
+        newest = self._store.latest_time(types)
+        age_hours = None
+        if newest is not None:
+            age_hours = max(
+                (datetime.now().timestamp() * 1000 - newest) / 3_600_000, 0.0)
+        opacity, note = staleness(age_hours)
+        for widget in widgets:
+            widget.set_opacity(opacity)
+        self._set_caption(label, note)
+
     def refresh(self) -> None:
         tz = local_tz_name()
         days = [local_day_start(_DAYS - 1 - i) for i in range(_DAYS)]
@@ -253,6 +336,9 @@ class Dashboard(Page):
         self._set_source_note(self._steps_source,
                               steps_today[-1] if steps_today else None,
                               lambda v: f"{int(v):,}")
+        self._set_trend(self._steps_trend, "step_count")
+        self._apply_freshness(["step_count"], self._steps_fresh,
+                              self._steps_body, self._steps_chart)
 
         # Calories in vs out (both canonical kcal).
         eaten = day_series("dietary_energy")
@@ -261,6 +347,7 @@ class Dashboard(Page):
         self._energy_today.set_label(
             f"Today: {format_value(eaten[-1], 'kcal')} kcal eaten · "
             f"{format_value(burned[-1], 'kcal')} kcal burned")
+        self._set_trend(self._energy_trend, "dietary_energy", prefix="Eaten ")
 
         self._update_meals()
 
@@ -273,6 +360,7 @@ class Dashboard(Page):
         self._water_ring.set_fraction(
             today_water / water_goal if water_goal else 0.0)
         self._water_chart.set_data(water, goal=water_goal or None)
+        self._set_trend(self._water_trend, "water_intake")
 
         # Weight, 30 days (sparse — the line skips gaps).
         w_start = to_ms(local_day_start(29))
@@ -316,8 +404,11 @@ class Dashboard(Page):
         else:
             self._heart_summary.set_label("No readings today")
             self._set_source_note(self._heart_source, None, str)
+        self._apply_freshness(["heart_rate"], self._heart_fresh,
+                              self._heart_chart)
 
         self._update_sleep()
+        self._update_recap()
 
     def _update_meals(self) -> None:
         from vitals.sources.food import summarize_meals
@@ -356,6 +447,82 @@ class Dashboard(Page):
                 expander.add_row(frow)
             self._meals_group.add(expander)
             self._meal_rows.append(expander)
+
+    def _on_copy_day_picked(self, calendar) -> None:
+        # Only respond to real user picks (the popover is open), not the
+        # signal GtkCalendar emits while being set up.
+        if not self._copy_popover.get_visible():
+            return
+        gd = calendar.get_date()
+        source = date(gd.get_year(), gd.get_month(), gd.get_day_of_month())
+        self._copy_popover.popdown()
+        self._copy_meals_from(source)
+
+    def _copy_meals_from(self, source: date) -> None:
+        """Re-log every food from ``source`` onto today, same times."""
+        from vitals.sources.food import copy_meal_records
+
+        today = datetime.now().astimezone().date()
+        if source >= today or self._recorder is None:
+            self._toast("Pick a past day to copy from")
+            return
+        day_start = datetime(source.year, source.month,
+                             source.day).astimezone()
+        rows, _ = self._store.read_records(
+            ["nutrient_intake"], start_ms=to_ms(day_start),
+            end_ms=to_ms(day_start + timedelta(days=1)))
+        if not rows:
+            self._toast(f"No meals logged on {source:%a %-d %b}")
+            return
+        summary = self._recorder.ingest(copy_meal_records(rows, today))
+        if summary["rejected"]:
+            self._toast(f"Couldn’t copy: {summary['rejected'][0][1]}")
+            return
+        count = len(rows)
+        self._toast(f"Copied {count} food{'s' if count != 1 else ''} "
+                    f"from {source:%a %-d %b}")
+
+    def _update_recap(self) -> None:
+        # The last *completed* Monday–Sunday week against the one
+        # before — two equal, finished windows, so the deltas are honest.
+        back = datetime.now().astimezone().weekday()
+        week: dict[str, list[float | None]] = {}
+        prior: dict[str, list[float | None]] = {}
+        for spec in RECAP_METRICS:
+            op = "sum" if spec["mode"] == "per-day" else "avg"
+            week[spec["key"]] = self._day_values(
+                spec["key"], op, back + 7, back)
+            prior[spec["key"]] = self._day_values(
+                spec["key"], op, back + 14, back + 7)
+
+        self._recap_caption.set_label(
+            f"{local_day_start(back + 7):%-d %b} – "
+            f"{local_day_start(back + 1):%-d %b}")
+        child = self._recap_box.get_first_child()
+        while child is not None:
+            nxt = child.get_next_sibling()
+            self._recap_box.remove(child)
+            child = nxt
+        rows = recap_rows(week, prior)
+        if not rows:
+            empty = Gtk.Label(label="Nothing recorded last week", xalign=0)
+            empty.add_css_class("dim-label")
+            self._recap_box.append(empty)
+            return
+        for row in rows:
+            line = Gtk.Box(spacing=12)
+            title = Gtk.Label(label=row["title"], xalign=0, hexpand=True)
+            line.append(title)
+            values = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+            value = Gtk.Label(label=row["value_text"], xalign=1)
+            values.append(value)
+            if row["trend_text"]:
+                trend = Gtk.Label(label=row["trend_text"], xalign=1)
+                trend.add_css_class("caption")
+                trend.add_css_class("dim-label")
+                values.append(trend)
+            line.append(values)
+            self._recap_box.append(line)
 
     def _update_sleep(self) -> None:
         since = to_ms(datetime.now().astimezone() - timedelta(hours=36))

@@ -267,6 +267,15 @@ def test_types_for_device(cat, store):
     assert store.types_for_device("nope") == []
 
 
+def test_latest_time_is_the_newest_sample(cat, store):
+    store.insert_records(_batch(cat), APP)     # newest starts 02 Jun 09:00
+    newest = store.latest_time(["step_count"])
+    assert newest == 1780390800000             # 2026-06-02T09:00:00Z in ms
+    assert store.latest_time(["step_count", "heart_rate"]) == newest
+    assert store.latest_time(["heart_rate"]) is None
+    assert store.latest_time([]) is None
+
+
 def test_aggregate_flags_source_discrepancy(cat, store):
     # Ring reads 60, Pebble reads 100 in the same hour — a big disagreement.
     store.insert_records([

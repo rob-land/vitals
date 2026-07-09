@@ -296,6 +296,19 @@ class Store:
             out.append(entry)
         return out
 
+    def latest_time(self, types) -> int | None:
+        """The newest ``effective_start`` (ms) across the given types,
+        or None when nothing is recorded — the dashboard's freshness
+        fade keys off how old this is."""
+        if not types:
+            return None
+        row = self._con.execute(
+            "SELECT MAX(effective_start) FROM samples "
+            f"WHERE deleted = 0 AND type IN ({','.join('?' * len(types))})",
+            list(types),
+        ).fetchone()
+        return row[0]
+
     def types_for_device(self, device_id: str) -> list[str]:
         """The distinct record types a source (by device_id; "" is the
         manual-entry / no-device source) has produced."""

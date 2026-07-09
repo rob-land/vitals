@@ -296,16 +296,24 @@ class MetricDetailPage(Adw.NavigationPage):
             rows = self._store.aggregate(
                 self._type_key, op, bucket, start_ms=s_ms, end_ms=e_ms,
                 tz=tz, source_trust=trust, value_range=self._range)
-            return {norm_key(r["start"], bucket): r["value"] for r in rows}
+            return {norm_key(r["start"], bucket): r for r in rows}
+
+        # Each bucket keeps the aggregate's provenance — the resolved
+        # source and sample count — so the scrub readout can show where
+        # a value actually came from.
+        def provenance(row):
+            return {"n": row["n"], "source": row.get("source")}
 
         if self._additive:
             vals = agg("sum")
-            self._buckets = [{"value": vals[k]} if k in vals else None
-                             for k in keys]
+            self._buckets = [
+                {"value": vals[k]["value"], **provenance(vals[k])}
+                if k in vals else None for k in keys]
         else:
             avg, lo, hi = agg("avg"), agg("min"), agg("max")
             self._buckets = [
-                {"avg": avg[k], "low": lo[k], "high": hi[k]}
+                {"avg": avg[k]["value"], "low": lo[k]["value"],
+                 "high": hi[k]["value"], **provenance(avg[k])}
                 if k in avg else None for k in keys]
 
         goal = self._goal() if self._additive else None
@@ -396,16 +404,37 @@ class MetricDetailPage(Adw.NavigationPage):
             self._show_summary()
             return
         bucket = self._buckets[index]
-        when = self._bucket_date_label(self._starts[index])
+        parts = [self._bucket_date_label(self._starts[index])]
         if self._additive:
             self._readout.set_label(f"{_num(bucket['value'])} {self._unit}")
-            self._readout_sub.set_label(when)
         else:
             self._readout.set_label(
                 f"{_num(bucket['low'])}–{_num(bucket['high'])} {self._unit}")
-            avg = bucket.get("avg")
-            self._readout_sub.set_label(
-                f"{when} · avg {_num(avg)}" if avg is not None else when)
+            if bucket.get("avg") is not None:
+                parts.append(f"avg {_num(bucket['avg'])}")
+        parts.append(self._provenance(bucket))
+        self._readout_sub.set_label(" · ".join(p for p in parts if p))
+
+    def _provenance(self, bucket: dict) -> str:
+        """Where the scrubbed bucket's value came from: its sample count
+        and the source the aggregate resolved to."""
+        n = bucket.get("n")
+        text = f"{n} sample{'s' if n != 1 else ''}" if n else ""
+        name = self._source_name(bucket.get("source"))
+        if name:
+            text = f"{text} · {name}" if text else name
+        return text
+
+    def _source_name(self, device_id: str | None) -> str | None:
+        if device_id is None:
+            return None
+        if device_id == "":
+            return "Manual entry"
+        if self._manager is not None:
+            for entry in self._manager.list():
+                if entry.address == device_id:
+                    return entry.name
+        return device_id
 
     def _bucket_date_label(self, dt: datetime) -> str:
         now = datetime.now().astimezone()

@@ -115,3 +115,60 @@ def test_meal_without_calories_has_no_companion():
     from vitals.sources.food import build_meal_records
     records = build_meal_records("Celery", "snack", {"fat": 0.1}, WHEN, UID)
     assert [r["type"] for r in records] == ["nutrient_intake"]
+
+
+# ── copy-from-date ────────────────────────────────────────────────
+
+def _stored_row(meal, label, kcal, when_local, amount=None, barcode=None):
+    """A nutrient_intake row as the store would return it."""
+    value = {"label": label,
+             "nutrients": {"energy-kcal": {"value": kcal, "unit": "kcal"},
+                           "fat": {"value": 8.5, "unit": "g"}}}
+    if amount:
+        value["amount"] = {"value": amount, "unit": "g"}
+    meta = {"meal": meal}
+    if barcode:
+        meta["off_barcode"] = barcode
+    return {"meta_json": json.dumps(meta), "value_json": json.dumps(value),
+            "effective_start": round(when_local.timestamp() * 1000)}
+
+
+def test_copy_meal_records_moves_the_date_keeps_the_time():
+    from datetime import date, datetime
+
+    from vitals.sources.food import copy_meal_records
+    breakfast = datetime(2026, 7, 1, 8, 30).astimezone()
+    rows = [_stored_row("breakfast", "Oatmeal", 300, breakfast,
+                        amount=40, barcode="123")]
+    uuids = iter(["new-uuid"])
+    records = copy_meal_records(rows, date(2026, 7, 8),
+                                uuid_factory=lambda: next(uuids))
+    assert [r["type"] for r in records] == ["nutrient_intake",
+                                            "dietary_energy"]
+    meal, energy = records
+    when = datetime.fromisoformat(meal["effective_start"])
+    assert (when.date(), when.hour, when.minute) == (date(2026, 7, 8), 8, 30)
+    # Fresh identity — a copy is a new logging, not an upsert.
+    assert meal["uuid"] == "new-uuid"
+    assert energy["uuid"] == "new-uuid:energy"
+    # Everything else carries over.
+    assert meal["value"]["label"] == "Oatmeal"
+    assert meal["value"]["nutrients"]["fat"] == {"value": 8.5, "unit": "g"}
+    assert meal["value"]["amount"] == {"value": 40, "unit": "g"}
+    assert meal["meta"] == {"meal": "breakfast", "off_barcode": "123"}
+    assert energy["value"] == 300
+
+
+def test_copy_meal_records_copies_every_food_of_the_day():
+    from datetime import date, datetime
+
+    from vitals.sources.food import copy_meal_records
+    day = datetime(2026, 7, 1, 12, 0).astimezone()
+    rows = [_stored_row("lunch", "Soup", 250, day),
+            _stored_row("dinner", "Pasta", 600,
+                        day.replace(hour=19, minute=15))]
+    records = copy_meal_records(rows, date(2026, 7, 8))
+    meals = [r for r in records if r["type"] == "nutrient_intake"]
+    assert [m["value"]["label"] for m in meals] == ["Soup", "Pasta"]
+    assert {m["meta"]["meal"] for m in meals} == {"lunch", "dinner"}
+    assert len(records) == 4  # each meal brings its energy companion

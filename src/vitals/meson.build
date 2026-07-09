@@ -9,6 +9,7 @@ python.install_sources(
     'window.py',
     'preferences.py',
     'format.py',
+    'trends.py',
     'logging_setup.py',
   ),
   subdir: meson.project_name(),

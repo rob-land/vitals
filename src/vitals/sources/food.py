@@ -138,6 +138,35 @@ def build_meal_records(label: str, meal: str, nutrients: dict[str, float],
     return records
 
 
+def copy_meal_records(rows, target, uuid_factory=None) -> list[dict]:
+    """Pure: re-log one day's foods onto the ``target`` date.
+
+    ``rows`` are that day's ``nutrient_intake`` store rows. Each food
+    keeps its label, meal tag, nutrients, portion, barcode and
+    wall-clock time — only the date moves — and gets a fresh uuid, so
+    a copy is a new logging, not an upsert of the original. Companion
+    ``dietary_energy`` scalars come along via ``build_meal_records``.
+    """
+    import json
+
+    make_uuid = uuid_factory or (lambda: str(uuid.uuid4()))
+    records: list[dict] = []
+    for row in rows:
+        value = json.loads(row["value_json"] or "{}")
+        meta = json.loads(row["meta_json"] or "{}")
+        nutrients = {k: v["value"]
+                     for k, v in value.get("nutrients", {}).items()}
+        src_local = datetime.fromtimestamp(
+            row["effective_start"] / 1000).astimezone()
+        when = datetime.combine(target, src_local.time()).astimezone()
+        records.extend(build_meal_records(
+            value.get("label", ""), meta.get("meal") or "other", nutrients,
+            when.isoformat(), make_uuid(),
+            amount_g=value.get("amount", {}).get("value"),
+            barcode=meta.get("off_barcode")))
+    return records
+
+
 class FoodDialog(Adw.Dialog):
     __gtype_name__ = "VitalsFoodDialog"
 

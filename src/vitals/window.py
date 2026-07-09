@@ -55,7 +55,7 @@ class VitalsWindow(Adw.ApplicationWindow):
 
         self._pages = {
             "dashboard": Dashboard(app.store, app.settings, app.device_manager,
-                                   app.catalog),
+                                   app.catalog, app.recorder),
             "timeline": Timeline(app.store, app.catalog),
             "devices": Devices(app.device_manager, app.ble, app.scan_broker),
         }
