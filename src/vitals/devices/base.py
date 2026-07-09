@@ -107,6 +107,23 @@ class WorkoutSession:
         return max(0.0, self.end - self.start)
 
 
+@dataclass(frozen=True)
+class HydrationReading:
+    """One drink logged by a smart water bottle.
+
+    `amount_ml` is the volume consumed in that sip/drink; `timestamp`
+    is unix-seconds (UTC) when the bottle recorded it. `temperature_c`
+    (water temperature) and `tds_ppm` (total dissolved solids — a
+    water-quality reading) are optional: only the fuller bottle models
+    have those sensors, so plainer bottles leave them None and the
+    application never surfaces them for that device.
+    """
+    amount_ml: float
+    timestamp: float
+    temperature_c: float | None = None
+    tds_ppm: int | None = None
+
+
 class Device(abc.ABC):
     """Abstract base for watch plugins.
 
@@ -147,9 +164,24 @@ class Device(abc.ABC):
     SUPPORTS_ACTIVITY_READ:   ClassVar[bool] = False
     SUPPORTS_SLEEP_READ:      ClassVar[bool] = False
     SUPPORTS_WORKOUT_READ:    ClassVar[bool] = False
+    SUPPORTS_HYDRATION_READ:  ClassVar[bool] = False
     SUPPORTS_FIRMWARE_UPDATE: ClassVar[bool] = False
     SUPPORTS_APP_INSTALL:     ClassVar[bool] = False
     SUPPORTS_WEATHER_PUSH:    ClassVar[bool] = False
+    # The device can measure health metrics (HR, SpO2, temperature, …)
+    # on its own on a periodic schedule, and Vitals can turn that on/off
+    # and set the interval — so the user configures the device from
+    # Vitals rather than the vendor app. See configure_monitoring.
+    SUPPORTS_MONITORING_CONFIG: ClassVar[bool] = False
+
+    # Per-metric sensor quality, keyed by record-type. When several
+    # devices report the same metric, Vitals resolves each time bucket to
+    # the highest-quality source rather than summing/averaging across
+    # them (a dedicated cuff or scale should outweigh a watch's estimate,
+    # and two step counters must never be added together). Tiers are
+    # "high" | "medium" | "low"; any metric not listed defaults to
+    # "medium". See DeviceManager.source_trust and Store.aggregate.
+    SENSOR_QUALITY: ClassVar[dict[str, str]] = {}
 
     # Firmware-update style. False (default): the watch is flashed over
     # its normal connection (Pebble's PRF onboarding). True: the watch
@@ -171,6 +203,17 @@ class Device(abc.ABC):
     # holds a per-name lock so two such devices serialize.
     EXCLUSIVE_TRANSPORT: ClassVar[str | None] = None
 
+    # ── onboarding (the pairing wizard) ───────────────────────────
+    # Which category this device shows under in the "add a device"
+    # wizard (see CATEGORY_INFO). The wizard groups plugins by this and
+    # scans filtered to the chosen one.
+    CATEGORY: ClassVar[str] = "sensor"
+    # A symbolic icon shown on the guidance step.
+    ICON_NAME: ClassVar[str] = "bluetooth-symbolic"
+    # Ordered, human-facing steps for putting THIS device into a
+    # pairable state — the guidance page renders them as a numbered list.
+    PAIRING_STEPS: ClassVar[list[str]] = []
+
     address: str   # BLE MAC address of the paired watch
     name:    str   # Advertised BLE name at pairing time
 
@@ -183,6 +226,29 @@ class Device(abc.ABC):
     def matches(cls, advertised_name: str | None,
                 service_uuids: list[str]) -> bool:
         """Whether this plugin recognises a discovered device."""
+
+    # Priority when several plugins all claim the same advertisement.
+    # Higher wins. Only consulted when matches() is True. Cheap devices
+    # advertise a jumble of shared transports (Nordic UART, standard
+    # Heart Rate) alongside their real vendor service, so more than one
+    # plugin can match — the strongest signal should win. Rough scale:
+    #   1   generic fallback (the standard-GATT sensor catch-all)
+    #   5   a shared/generic transport with nothing more specific
+    #   10  a normal specific match (a family's own name or service)
+    #   30  a unique vendor service that uniquely identifies the family
+    MATCH_GENERIC_FALLBACK: ClassVar[int] = 1
+    MATCH_SHARED_TRANSPORT: ClassVar[int] = 5
+    MATCH_SPECIFIC: ClassVar[int] = 10
+    MATCH_VENDOR_SERVICE: ClassVar[int] = 30
+
+    @classmethod
+    def match_specificity(cls, advertised_name: str | None,
+                          service_uuids: list[str]) -> int:
+        """How strongly this plugin claims the advertisement (see the
+        MATCH_* scale). Default is a normal specific match; plugins that
+        can match on a generic transport or are the catch-all override
+        this so the most specific plugin wins in matching_device."""
+        return cls.MATCH_SPECIFIC
 
     @abc.abstractmethod
     async def connect(self) -> None:
@@ -206,6 +272,25 @@ class Device(abc.ABC):
         """
         raise NotImplementedError(
             f"{self.display_name} does not support time sync")
+
+    async def configure_monitoring(self, enabled: bool,
+                                   interval_minutes: int) -> None:
+        """Turn the device's automatic health monitoring on or off and
+        set how often it samples.
+
+        When ``enabled`` the device measures its sensors (whichever it
+        has — heart rate, SpO2, temperature, …) every ``interval_minutes``
+        and logs the readings to its own history, which a later sync
+        drains. This is what lets Vitals own the device's configuration
+        instead of relying on the vendor app.
+
+        The application applies this on every connect (it's idempotent),
+        so the device's cadence tracks the Vitals setting. Default raises
+        NotImplementedError; subclasses that flip
+        SUPPORTS_MONITORING_CONFIG=True must override.
+        """
+        raise NotImplementedError(
+            f"{self.display_name} does not support monitoring configuration")
 
     async def push_alarms(self, alarms,
                           previously_pushed_ids=frozenset()) -> set[str]:
@@ -337,6 +422,17 @@ class Device(abc.ABC):
         """
         return None
 
+    async def get_hydration_series(self) -> list[HydrationReading] | None:
+        """Read the drink log a smart water bottle has accumulated since
+        the last sync.
+
+        Returns a list (possibly empty) of `HydrationReading`s for water
+        bottles; None for devices that don't track hydration. Default
+        None. Subclasses that flip SUPPORTS_HYDRATION_READ=True must
+        override.
+        """
+        return None
+
     async def get_heart_rate_samples(self) -> list[ActivityReading]:
         """Read fine-grained per-sample heart-rate readings accumulated
         since the last read, for sources that log them (e.g. a Pebble's
@@ -389,8 +485,12 @@ def _load_builtins() -> None:
         return
     # Import side effects register built-in plugins.
     from vitals.devices import (
+        and_oximeter,  # noqa: F401
         bangle,  # noqa: F401
+        omron_bp,  # noqa: F401
         pinetime,  # noqa: F401
+        waterh_bottle,  # noqa: F401
+        yucheng_ring,  # noqa: F401
     )
     from vitals.devices.pebble import pebble  # noqa: F401
     from vitals.devices.sensors import plugin  # noqa: F401
@@ -446,14 +546,54 @@ def available_devices() -> dict[str, type[Device]]:
 
 def matching_device(advertised_name: str | None,
                     service_uuids: list[str]) -> type[Device] | None:
-    """Return the first registered plugin that claims this BLE
-    advertisement, or None if none match."""
+    """Return the plugin that most specifically claims this BLE
+    advertisement, or None if none match.
+
+    A device can advertise several shared transports at once (a Yucheng
+    ring exposes its vendor service *and* Nordic UART *and* standard
+    Heart Rate), so multiple plugins may match. We pick the highest
+    ``match_specificity`` — the strongest identity signal — breaking ties
+    by registration order.
+    """
     _load_builtins()
     _load_external()
+    best: type[Device] | None = None
+    best_score = 0
     for cls in _REGISTRY.values():
         try:
             if cls.matches(advertised_name, service_uuids):
-                return cls
+                score = cls.match_specificity(advertised_name, service_uuids)
+                if score > best_score:
+                    best, best_score = cls, score
         except Exception:
             continue
-    return None
+    return best
+
+
+# Wizard category metadata: id -> (label, symbolic icon, short description).
+CATEGORY_INFO: dict[str, tuple[str, str, str]] = {
+    "watch": ("Smartwatch", "phone-symbolic",
+              "Pebble, Bangle.js, PineTime"),
+    "blood_pressure": ("Blood-pressure monitor", "bluetooth-symbolic",
+                       "OMRON and standard BP cuffs"),
+    "scale": ("Scale", "bluetooth-symbolic", "Weight & body composition"),
+    "oximeter": ("Pulse oximeter", "bluetooth-symbolic", "SpO2 & pulse"),
+    "ring": ("Smart ring", "bluetooth-symbolic", "Yucheng / TK-series"),
+    "bottle": ("Smart water bottle", "bluetooth-symbolic",
+               "Hydration tracking"),
+    "sensor": ("Other health sensor", "bluetooth-symbolic",
+               "Standard Bluetooth health devices"),
+}
+
+
+def plugins_by_category() -> dict[str, list[type[Device]]]:
+    """Registered plugins grouped by CATEGORY, in CATEGORY_INFO order."""
+    _load_builtins()
+    _load_external()
+    groups: dict[str, list[type[Device]]] = {}
+    for cls in _REGISTRY.values():
+        groups.setdefault(cls.CATEGORY, []).append(cls)
+    ordered = {k: groups[k] for k in CATEGORY_INFO if k in groups}
+    for key, value in groups.items():
+        ordered.setdefault(key, value)
+    return ordered

@@ -54,7 +54,8 @@ class VitalsWindow(Adw.ApplicationWindow):
             self.add_action(action)
 
         self._pages = {
-            "dashboard": Dashboard(app.store, app.settings),
+            "dashboard": Dashboard(app.store, app.settings, app.device_manager,
+                                   app.catalog),
             "timeline": Timeline(app.store, app.catalog),
             "devices": Devices(app.device_manager, app.ble, app.scan_broker),
         }
@@ -92,7 +93,14 @@ class VitalsWindow(Adw.ApplicationWindow):
     def push_device_detail(self, address: str) -> None:
         from vitals.pages.device_detail import DeviceDetailPage
         app = self.get_application()
-        self.navigation_view.push(DeviceDetailPage(app.device_manager, address))
+        self.navigation_view.push(
+            DeviceDetailPage(app.device_manager, address, app.catalog))
+
+    def push_metric_detail(self, type_key: str) -> None:
+        from vitals.pages.metric_detail import MetricDetailPage
+        app = self.get_application()
+        self.navigation_view.push(MetricDetailPage(
+            app.store, app.catalog, type_key, app.device_manager))
 
     def pop_device_detail(self) -> None:
         self.navigation_view.pop_to_tag("main")

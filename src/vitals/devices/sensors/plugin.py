@@ -67,14 +67,42 @@ class GattSensorDevice(Device):
     display_name = "Health Sensor"
     description = ("Standard Bluetooth health sensor — blood pressure, "
                    "scale, glucose, SpO2, thermometer, heart-rate strap")
+    CATEGORY = "sensor"
+    PAIRING_STEPS = [
+        "Put your sensor into pairing mode — usually a button held until "
+        "it flashes; check its manual.",
+        "For a cuff or scale, taking a measurement wakes it. Then search.",
+    ]
 
     INTERACTION = "opportunistic"
+
+    # These are purpose-built instruments (blood-pressure cuffs, scales,
+    # glucose meters, oximeters, thermometers, chest straps), so their
+    # readings outrank a watch's or ring's estimate of the same metric.
+    SENSOR_QUALITY = {
+        "blood_pressure": "high",
+        "body_weight": "high",
+        "body_mass_index": "high",
+        "body_fat_percentage": "high",
+        "blood_glucose": "high",
+        "oxygen_saturation": "high",
+        "body_temperature": "high",
+        "heart_rate": "high",
+        "respiratory_rate": "high",
+    }
 
     @classmethod
     def matches(cls, advertised_name, service_uuids) -> bool:
         advertised = {u.lower() for u in service_uuids}
         known = set(gatt.SERVICES) | set(gatt.ADVERTISEMENT_DECODERS)
         return bool(advertised & known)
+
+    @classmethod
+    def match_specificity(cls, advertised_name, service_uuids) -> int:
+        # The generic standard-GATT catch-all: any device that also
+        # matches a specific family plugin (e.g. a Yucheng ring that
+        # happens to expose standard Heart Rate) should go there instead.
+        return cls.MATCH_GENERIC_FALLBACK
 
     @classmethod
     def match_advertisement(cls, device, advertisement) -> bool:

@@ -22,6 +22,14 @@ from vitals.format import format_value, nice_max
 ACCENT = (0.21, 0.52, 0.89)
 ACCENT2 = (0.851, 0.467, 0.024)
 _ACCENT = ACCENT
+# Semantic green for the "normal range" band (separate from the accent).
+_NORMAL = (0.09, 0.56, 0.34)
+# Colours for event markers overlaid on a metric chart (Oura-style tags).
+EVENT_COLORS = {
+    "workout": (0.21, 0.52, 0.89),
+    "caffeine_intake": (0.55, 0.36, 0.17),
+    "alcohol_intake": (0.55, 0.34, 0.72),
+}
 
 
 class ActivityRing(Gtk.DrawingArea):
@@ -305,3 +313,237 @@ class LineChart(Gtk.DrawingArea):
         cr.show_text(format_value(max(present)))
         cr.move_to(2, pad_top + plot_h)
         cr.show_text(format_value(min(present)))
+
+
+class HistoryChart(Gtk.DrawingArea):
+    """Interactive bucketed chart for the metric-detail history view.
+
+    Renders a series of buckets as either **sum bars** (additive metrics)
+    or **min–max range bars** (point-in-time metrics), and supports
+    *scrubbing*: hovering (mouse) or press-dragging (touch) highlights the
+    nearest bucket and calls ``on_select(index)`` so the page can show that
+    bucket's value in a live readout. Gaps (``None`` buckets) render as
+    empty slots and are never interpolated. Each bucket is a dict:
+
+      * bars   → ``{"value": float}``
+      * range  → ``{"low": float, "high": float, "avg": float | None}``
+    """
+
+    __gtype_name__ = "VitalsHistoryChart"
+
+    def __init__(self):
+        super().__init__()
+        self._buckets: list[dict | None] = []
+        self._mode = "bars"
+        self._ticks: list[tuple[int, str]] = []
+        self._goal: float | None = None
+        self._normal: tuple[float, float] | None = None
+        self._events: list[dict] = []
+        self._selected: int | None = None
+        self._on_select = None
+        self._drag_x = 0.0
+        self.set_content_height(210)
+        self.set_hexpand(True)
+        self.set_draw_func(self._draw)
+
+        motion = Gtk.EventControllerMotion()
+        motion.connect("motion", lambda _c, x, _y: self._select_at(x))
+        motion.connect("leave", lambda _c: self._clear_selection())
+        self.add_controller(motion)
+
+        drag = Gtk.GestureDrag()
+        drag.connect("drag-begin", self._on_drag_begin)
+        drag.connect("drag-update", self._on_drag_update)
+        self.add_controller(drag)
+
+    def set_data(self, buckets, mode="bars", ticks=None, goal=None,
+                 on_select=None, normal=None, events=None) -> None:
+        self._buckets = list(buckets)
+        self._mode = mode
+        self._ticks = list(ticks or [])
+        self._goal = goal
+        self._normal = normal
+        self._events = list(events or [])
+        self._on_select = on_select
+        self._selected = None
+        self.queue_draw()
+
+    # ── scrubbing ─────────────────────────────────────────────────
+    def _on_drag_begin(self, _g, x, _y):
+        self._drag_x = x
+        self._select_at(x)
+
+    def _on_drag_update(self, _g, dx, _dy):
+        self._select_at(self._drag_x + dx)
+
+    def _select_at(self, x: float) -> None:
+        width = self.get_width()
+        if width <= 0 or not self._buckets:
+            return
+        slot = width / len(self._buckets)
+        i = max(0, min(len(self._buckets) - 1, int(x // slot)))
+        if self._buckets[i] is None:
+            i = self._nearest_present(i)
+        if i is not None and i != self._selected:
+            self._selected = i
+            self.queue_draw()
+            if self._on_select:
+                self._on_select(i)
+
+    def _nearest_present(self, i: int) -> int | None:
+        for step in range(len(self._buckets)):
+            for j in (i - step, i + step):
+                if 0 <= j < len(self._buckets) and self._buckets[j] is not None:
+                    return j
+        return None
+
+    def _clear_selection(self) -> None:
+        if self._selected is not None:
+            self._selected = None
+            self.queue_draw()
+        if self._on_select:
+            self._on_select(None)
+
+    # ── drawing ───────────────────────────────────────────────────
+    def _draw(self, _area, cr, width, height, *_):
+        fg = self.get_color()
+        pad_top, pad_bottom = 12, 20
+        plot_h = height - pad_top - pad_bottom
+        baseline = pad_top + plot_h
+
+        present = [b for b in self._buckets if b is not None]
+        if not present:
+            cr.set_source_rgba(fg.red, fg.green, fg.blue, 0.45)
+            cr.select_font_face("Sans")
+            cr.set_font_size(13)
+            cr.move_to(8, height / 2)
+            cr.show_text("No data in this period")
+            return
+
+        n = len(self._buckets)
+        slot = width / n
+
+        cr.set_source_rgba(fg.red, fg.green, fg.blue, 0.15)
+        cr.set_line_width(1)
+        cr.move_to(0, baseline)
+        cr.line_to(width, baseline)
+        cr.stroke()
+
+        if self._mode == "range":
+            self._draw_range(cr, present, slot, plot_h, baseline, fg, width)
+        else:
+            self._draw_bars(cr, present, slot, plot_h, baseline, fg, width)
+
+        # Event markers (Oura-style tags) along the time axis.
+        for ev in self._events:
+            ex = min(max(ev["frac"] * width, 2), width - 2)
+            colour = EVENT_COLORS.get(ev["kind"], (fg.red, fg.green, fg.blue))
+            cr.set_source_rgba(*colour, 0.16)
+            cr.set_line_width(1)
+            cr.move_to(ex, pad_top)
+            cr.line_to(ex, baseline)
+            cr.stroke()
+            cr.set_source_rgba(*colour, 0.95)
+            cr.arc(ex, baseline, 2.5, 0, 2 * math.pi)
+            cr.fill()
+
+        # Scrub caret.
+        if self._selected is not None:
+            sx = self._selected * slot + slot / 2
+            cr.set_source_rgba(*_ACCENT, 0.55)
+            cr.set_line_width(1)
+            cr.set_dash([2, 2])
+            cr.move_to(sx, pad_top)
+            cr.line_to(sx, baseline)
+            cr.stroke()
+            cr.set_dash([])
+
+        # X-axis ticks.
+        cr.set_source_rgba(fg.red, fg.green, fg.blue, 0.55)
+        cr.select_font_face("Sans")
+        cr.set_font_size(10)
+        for idx, label in self._ticks:
+            tx = idx * slot + slot / 2
+            ext = cr.text_extents(label)
+            cr.move_to(min(max(tx - ext.width / 2, 1), width - ext.width - 1),
+                       height - 6)
+            cr.show_text(label)
+
+    def _draw_bars(self, cr, present, slot, plot_h, baseline, fg, width):
+        top = nice_max([b["value"] for b in present], floor=self._goal or 0.0)
+        bar_w = slot * 0.62
+        for i, b in enumerate(self._buckets):
+            if b is None:
+                continue
+            h = plot_h * (b["value"] / top) if top else 0
+            x = i * slot + (slot - bar_w) / 2
+            cr.set_source_rgba(*_ACCENT, 1.0 if i == self._selected else 0.82)
+            cr.rectangle(x, baseline - h, bar_w, h)
+            cr.fill()
+        if self._goal:
+            gy = baseline - plot_h * min(self._goal / top, 1.0)
+            cr.set_source_rgba(fg.red, fg.green, fg.blue, 0.5)
+            cr.set_line_width(1)
+            cr.set_dash([4, 3])
+            cr.move_to(0, gy)
+            cr.line_to(width, gy)
+            cr.stroke()
+            cr.set_dash([])
+        cr.set_source_rgba(fg.red, fg.green, fg.blue, 0.5)
+        cr.select_font_face("Sans")
+        cr.set_font_size(11)
+        cr.move_to(2, 11)
+        cr.show_text(format_value(top))
+
+    def _draw_range(self, cr, present, slot, plot_h, baseline, fg, width):
+        lows = [b["low"] for b in present]
+        highs = [b["high"] for b in present]
+        lo, hi = min(lows), max(highs)
+        if self._normal:  # keep the reference band in view
+            lo, hi = min(lo, self._normal[0]), max(hi, self._normal[1])
+        span = (hi - lo) or max(abs(hi) * 0.1, 1.0)
+        lo -= span * 0.1
+        hi += span * 0.1
+        rng = hi - lo
+        bar_w = max(slot * 0.2, 3.0)
+
+        def y_of(v):
+            return baseline - plot_h * ((v - lo) / rng)
+
+        # Normal-range band behind the data.
+        if self._normal:
+            y_hi, y_lo = y_of(self._normal[1]), y_of(self._normal[0])
+            cr.set_source_rgba(*_NORMAL, 0.10)
+            cr.rectangle(0, y_hi, width, y_lo - y_hi)
+            cr.fill()
+            cr.set_source_rgba(*_NORMAL, 0.35)
+            cr.set_line_width(1)
+            cr.set_dash([3, 3])
+            for yy in (y_hi, y_lo):
+                cr.move_to(0, yy)
+                cr.line_to(width, yy)
+                cr.stroke()
+            cr.set_dash([])
+
+        cr.set_line_cap(1)  # round
+        for i, b in enumerate(self._buckets):
+            if b is None:
+                continue
+            x = i * slot + slot / 2
+            sel = i == self._selected
+            cr.set_source_rgba(*_ACCENT, 1.0 if sel else 0.62)
+            cr.set_line_width(bar_w + (1.5 if sel else 0))
+            cr.move_to(x, y_of(b["high"]))
+            cr.line_to(x, y_of(b["low"]))
+            cr.stroke()
+            if b.get("avg") is not None:
+                cr.set_source_rgba(fg.red, fg.green, fg.blue, 0.85)
+                cr.arc(x, y_of(b["avg"]), 1.6, 0, 2 * math.pi)
+                cr.fill()
+        cr.set_source_rgba(fg.red, fg.green, fg.blue, 0.5)
+        cr.select_font_face("Sans")
+        cr.set_font_size(11)
+        cr.move_to(2, 11)
+        cr.show_text(format_value(hi))
+        cr.move_to(2, baseline)
+        cr.show_text(format_value(lo))

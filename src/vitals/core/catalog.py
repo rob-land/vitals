@@ -39,6 +39,12 @@ class TypeDef:
     omh: dict | None
     gatt: dict | None
     notes: str | None = field(default=None)
+    # Physiologically plausible display range (canonical units), or None.
+    plausible: tuple[float, float] | None = field(default=None)
+    # Aggregates by sum (additive) vs by average with a min–max range (point).
+    additive: bool = field(default=False)
+    # Reference "normal" band (canonical units) to shade behind charts, or None.
+    normal_range: tuple[float, float] | None = field(default=None)
 
     @property
     def sensitive(self) -> bool:
@@ -96,6 +102,52 @@ class Catalog:
         }
 
 
+# Physiologically plausible ranges in canonical units. A sample outside the
+# range is almost certainly a sensor glitch (a 0-bpm heart rate, a 0-kg
+# weight), so charts and aggregates drop it at display time — the raw record
+# is never touched. Only point-in-time metrics where 0 / out-of-range is
+# impossible appear here; additive metrics (steps, water) legitimately reach
+# 0 and must not be filtered.
+_PLAUSIBLE: dict[str, tuple[float, float]] = {
+    "heart_rate": (20, 250),
+    "resting_heart_rate": (20, 200),
+    "heart_rate_variability": (1, 400),
+    "respiratory_rate": (4, 60),
+    "oxygen_saturation": (50, 100),
+    "body_temperature": (25, 45),
+    "basal_body_temperature": (25, 45),
+    "body_weight": (2, 500),
+    "body_mass_index": (5, 100),
+    "body_fat_percentage": (1, 75),
+    "lean_body_mass": (2, 300),
+    "waist_circumference": (20, 250),
+    "body_height": (30, 260),
+    "blood_glucose": (0.5, 45),          # mmol/L (canonical)
+    "continuous_glucose": (0.5, 45),
+    "vo2_max": (10, 90),
+}
+
+# Reference "normal" band (canonical units) drawn behind the chart so a
+# reading reads as normal / out-of-range at a glance. Only for metrics with
+# a broadly-applicable healthy range that doesn't depend on context like
+# activity or height (so heart_rate and body_weight are deliberately absent).
+_NORMAL_RANGE: dict[str, tuple[float, float]] = {
+    "resting_heart_rate": (50, 90),
+    "oxygen_saturation": (95, 100),
+    "respiratory_rate": (12, 20),
+    "body_temperature": (36.1, 37.5),
+    "body_mass_index": (18.5, 25.0),
+    "blood_glucose": (4.0, 7.8),           # mmol/L, general reference
+}
+
+# Scalar metrics that aggregate by SUM despite not being interval
+# measurements: discrete intake / dose events that accumulate over a day.
+_ADDITIVE_KEYS: set[str] = {
+    "water_intake", "dietary_energy", "caffeine_intake", "alcohol_intake",
+    "insulin_dose",
+}
+
+
 def _parse_type(entry: dict) -> TypeDef:
     component_units: dict[str, str] = {}
     for name, spec in (entry.get("components") or {}).items():
@@ -115,4 +167,8 @@ def _parse_type(entry: dict) -> TypeDef:
         omh=entry.get("omh"),
         gatt=entry.get("gatt"),
         notes=entry.get("notes"),
+        plausible=_PLAUSIBLE.get(entry["key"]),
+        additive=bool(entry.get("interval", False))
+        or entry["key"] in _ADDITIVE_KEYS,
+        normal_range=_NORMAL_RANGE.get(entry["key"]),
     )

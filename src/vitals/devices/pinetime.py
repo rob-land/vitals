@@ -47,6 +47,12 @@ class PineTimeDevice(Device):
     id = "pinetime"
     display_name = "PineTime"
     description = "PINE64 PineTime running InfiniTime firmware"
+    CATEGORY = "watch"
+    ICON_NAME = "phone-symbolic"
+    PAIRING_STEPS = [
+        "Wake your PineTime and keep it near the phone.",
+        "InfiniTime advertises automatically — no button press needed.",
+    ]
 
     SUPPORTS_TIME_SYNC     = True
     SUPPORTS_ALARM_PUSH    = False

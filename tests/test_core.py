@@ -157,6 +157,144 @@ def test_aggregate_sums_by_day(cat, store):
     assert by_day["2026-06-02"] == pytest.approx(1500)
 
 
+def _multi_source_steps(cat):
+    # One day: the ring reports 1000+500 steps, the Pebble reports 1200.
+    return [
+        _norm(cat, env("step_count", 1000, "2026-06-01T09:00:00+00:00",
+                       unit="{steps}", device="ring", uuid="r1")),
+        _norm(cat, env("step_count", 500, "2026-06-01T10:00:00+00:00",
+                       unit="{steps}", device="ring", uuid="r2")),
+        _norm(cat, env("step_count", 1200, "2026-06-01T09:00:00+00:00",
+                       unit="{steps}", device="pebble", uuid="p1")),
+    ]
+
+
+def test_aggregate_double_counts_across_sources_by_default(cat, store):
+    store.insert_records(_multi_source_steps(cat), APP)
+    (day,) = store.aggregate("step_count", "sum", "day", tz="UTC")
+    # 1000 + 500 + 1200 — both devices' steps summed together.
+    assert day["value"] == pytest.approx(2700)
+    assert "source" not in day
+
+
+def test_aggregate_resolves_additive_to_one_source(cat, store):
+    store.insert_records(_multi_source_steps(cat), APP)
+    (day,) = store.aggregate("step_count", "sum", "day", tz="UTC",
+                             source_trust={"ring": 30, "pebble": 10})
+    assert day["value"] == pytest.approx(1500)   # only the ring's steps
+    assert day["source"] == "ring"
+
+
+def test_aggregate_resolution_respects_trust_order(cat, store):
+    store.insert_records(_multi_source_steps(cat), APP)
+    (day,) = store.aggregate("step_count", "sum", "day", tz="UTC",
+                             source_trust={"ring": 5, "pebble": 20})
+    assert day["value"] == pytest.approx(1200)   # Pebble now wins
+    assert day["source"] == "pebble"
+
+
+def test_aggregate_resolution_does_not_blend_point_metric(cat, store):
+    store.insert_records([
+        _norm(cat, env("heart_rate", 60, "2026-06-01T09:00:00+00:00",
+                       unit="/min", device="ring", uuid="h1")),
+        _norm(cat, env("heart_rate", 100, "2026-06-01T09:05:00+00:00",
+                       unit="/min", device="pebble", uuid="h2")),
+    ], APP)
+    (hour,) = store.aggregate("heart_rate", "avg", "hour", tz="UTC",
+                              source_trust={"ring": 30, "pebble": 10})
+    assert hour["value"] == pytest.approx(60)    # the ring's, not 80
+    assert hour["source"] == "ring"
+
+
+def test_aggregate_resolution_tiebreaks_by_sample_count(cat, store):
+    store.insert_records([
+        _norm(cat, env("step_count", 100, "2026-06-01T09:00:00+00:00",
+                       unit="{steps}", device="a", uuid="a1")),
+        _norm(cat, env("step_count", 100, "2026-06-01T09:30:00+00:00",
+                       unit="{steps}", device="a", uuid="a2")),
+        _norm(cat, env("step_count", 999, "2026-06-01T09:00:00+00:00",
+                       unit="{steps}", device="b", uuid="b1")),
+    ], APP)
+    (day,) = store.aggregate("step_count", "sum", "day", tz="UTC",
+                             source_trust={})   # equal (default) trust
+    assert day["source"] == "a"                 # a has more samples
+    assert day["value"] == pytest.approx(200)
+
+
+def test_catalog_plausible_and_additive(cat):
+    assert cat.get("heart_rate").plausible == (20, 250)
+    assert cat.get("heart_rate").additive is False        # point-in-time
+    assert cat.get("step_count").additive is True         # interval:true
+    assert cat.get("water_intake").additive is True       # intake override
+    assert cat.get("water_intake").plausible is None      # additive: no range
+    assert cat.get("body_weight").plausible == (2, 500)
+    # Normal-range bands: present for context-free vitals, absent otherwise.
+    assert cat.get("oxygen_saturation").normal_range == (95, 100)
+    assert cat.get("heart_rate").normal_range is None     # activity-dependent
+
+
+def test_aggregate_value_range_drops_glitches(cat, store):
+    store.insert_records([
+        _norm(cat, env("heart_rate", 0, "2026-06-01T09:00:00+00:00",
+                       unit="/min", uuid="z")),           # sensor glitch
+        _norm(cat, env("heart_rate", 62, "2026-06-01T09:05:00+00:00",
+                       unit="/min", uuid="a")),
+        _norm(cat, env("heart_rate", 300, "2026-06-01T09:10:00+00:00",
+                       unit="/min", uuid="b")),            # sensor glitch
+        _norm(cat, env("heart_rate", 80, "2026-06-01T09:15:00+00:00",
+                       unit="/min", uuid="c")),
+    ], APP)
+    (lo,) = store.aggregate("heart_rate", "min", "day", tz="UTC",
+                            value_range=(20, 250))
+    (hi,) = store.aggregate("heart_rate", "max", "day", tz="UTC",
+                            value_range=(20, 250))
+    assert lo["value"] == 62 and hi["value"] == 80         # glitches excluded
+    # Without the range the 0 corrupts the minimum.
+    assert store.aggregate("heart_rate", "min", "day", tz="UTC")[0]["value"] == 0
+
+
+def test_types_for_device(cat, store):
+    store.insert_records([
+        _norm(cat, env("heart_rate", 60, "2026-06-01T09:00:00+00:00",
+                       unit="/min", device="ring", uuid="a")),
+        _norm(cat, env("step_count", 100, "2026-06-01T09:00:00+00:00",
+                       unit="{steps}", device="ring", uuid="b")),
+        _norm(cat, env("water_intake", 200, "2026-06-01T09:00:00+00:00",
+                       unit="mL", device="", uuid="c")),
+    ], APP)
+    assert store.types_for_device("ring") == ["heart_rate", "step_count"]
+    assert store.types_for_device("") == ["water_intake"]   # manual entry
+    assert store.types_for_device("nope") == []
+
+
+def test_aggregate_flags_source_discrepancy(cat, store):
+    # Ring reads 60, Pebble reads 100 in the same hour — a big disagreement.
+    store.insert_records([
+        _norm(cat, env("heart_rate", 60, "2026-06-01T09:00:00+00:00",
+                       unit="/min", device="ring", uuid="d1")),
+        _norm(cat, env("heart_rate", 100, "2026-06-01T09:05:00+00:00",
+                       unit="/min", device="pebble", uuid="d2")),
+    ], APP)
+    (hour,) = store.aggregate("heart_rate", "avg", "hour", tz="UTC",
+                              source_trust={"ring": 30, "pebble": 10},
+                              discrepancy_threshold=0.15)
+    assert hour["source"] == "ring" and hour["value"] == pytest.approx(60)
+    assert hour["discrepancy"] == {"pebble": 100.0}   # dropped source disagrees
+
+
+def test_aggregate_no_discrepancy_when_sources_agree(cat, store):
+    store.insert_records([
+        _norm(cat, env("heart_rate", 60, "2026-06-01T09:00:00+00:00",
+                       unit="/min", device="ring", uuid="d1")),
+        _norm(cat, env("heart_rate", 62, "2026-06-01T09:05:00+00:00",
+                       unit="/min", device="pebble", uuid="d2")),
+    ], APP)
+    (hour,) = store.aggregate("heart_rate", "avg", "hour", tz="UTC",
+                              source_trust={"ring": 30, "pebble": 10},
+                              discrepancy_threshold=0.15)
+    assert "discrepancy" not in hour   # 60 vs 62 is within the threshold
+
+
 def test_edit_and_tombstone_flow_through_change_feed(cat, store):
     store.insert_records(_batch(cat), APP)
     edited = _norm(cat, env("step_count", 1300, "2026-06-01T09:00:00+00:00",

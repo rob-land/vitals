@@ -26,8 +26,8 @@ from gi.repository import GLib, GObject
 
 from vitals.devices.base import Device, available_devices
 from vitals.ingest import (
-    HealthSample, SleepSample, WorkoutSample, build_records,
-    build_sleep_record, build_workout_record)
+    HealthSample, HydrationSample, SleepSample, WorkoutSample, build_records,
+    build_hydration_record, build_sleep_record, build_workout_record)
 
 log = logging.getLogger(__name__)
 
@@ -36,6 +36,12 @@ ROLE_SENSOR = "sensor"
 
 # Concurrent BLE connect attempts (not open connections).
 _MAX_CONCURRENT_CONNECTS = 2
+
+# Sensor-quality tiers → numeric trust for cross-source resolution.
+_QUALITY_SCORE = {"high": 30, "medium": 20, "low": 10}
+_DEFAULT_QUALITY = _QUALITY_SCORE["medium"]
+# A device the user pins for a metric wins outright over quality tiers.
+_PREFERRED_BOOST = 100
 
 
 @dataclass
@@ -71,12 +77,15 @@ class DeviceManager(GObject.Object):
         "device-synced": (GObject.SignalFlags.RUN_FIRST, None, (str, str)),
     }
 
-    def __init__(self, store, recorder, settings, ble):
+    def __init__(self, store, recorder, settings, ble, bluetooth=None):
         super().__init__()
         self._store = store
         self._recorder = recorder
         self._settings = settings
         self._ble = ble
+        # Optional BluetoothMonitor: some hosts idle the controller off,
+        # so we power it back on before a sync rather than failing.
+        self._bluetooth = bluetooth
         self._entries: dict[str, DeviceEntry] = {}
         # Named asyncio locks for EXCLUSIVE_TRANSPORT families and the
         # connect semaphore — created lazily *on the BLE loop*.
@@ -105,6 +114,40 @@ class DeviceManager(GObject.Object):
 
     def get(self, address: str) -> DeviceEntry | None:
         return self._entries.get(address)
+
+    def source_trust(self, metric: str) -> dict[str, int]:
+        """Rank each source (keyed by device_id) for `metric` — how much
+        to trust it when several devices report the same thing.
+
+        Combines the plugin's declared sensor quality with any per-device
+        user preference (``settings["preferred_metrics"]``). The empty
+        string is the manual-entry / no-device source. The result feeds
+        ``Store.aggregate(..., source_trust=…)`` so overlapping metrics
+        resolve to one source instead of double-counting or blending.
+        """
+        trust: dict[str, int] = {"": _DEFAULT_QUALITY}
+        for entry in self._entries.values():
+            plugin = entry.plugin
+            tier = plugin.SENSOR_QUALITY.get(metric) if plugin else None
+            score = _QUALITY_SCORE.get(tier, _DEFAULT_QUALITY)
+            if metric in entry.settings.get("preferred_metrics", []):
+                score += _PREFERRED_BOOST
+            trust[entry.address] = score
+        return trust
+
+    def contested_metrics(self, address: str) -> list[str]:
+        """Record types this device produces that another source (another
+        device, or manual entry) also produces — the metrics where a
+        'prefer this device' choice actually changes the resolved value.
+        """
+        mine = set(self._store.types_for_device(address))
+        if not mine:
+            return []
+        others: set[str] = set(self._store.types_for_device(""))
+        for addr in self._entries:
+            if addr != address:
+                others |= set(self._store.types_for_device(addr))
+        return sorted(mine & others)
 
     def add(self, address: str, name: str, kind: str) -> DeviceEntry:
         plugin = available_devices()[kind]
@@ -155,6 +198,10 @@ class DeviceManager(GObject.Object):
         entry = self._entries.get(address)
         if entry is None or entry.busy or entry.role != ROLE_WATCH:
             return False
+        # Make sure the controller is powered — on hosts that idle it off
+        # a timed sync would otherwise fail before it starts.
+        if self._bluetooth is not None:
+            self._bluetooth.power_on()
         plugin = entry.plugin
         if plugin is None:
             self.emit("device-synced", address,
@@ -166,10 +213,19 @@ class DeviceManager(GObject.Object):
         alarms = entry.settings.get("alarms", [])
         previously_pushed = set(entry.settings.get("pushed_alarm_ids", []))
         push_alarms = bool(alarms) or bool(previously_pushed)
+        # Devices that can self-monitor are configured from Vitals: on by
+        # default once paired so the vendor app is never needed.
+        monitoring = None
+        if plugin.SUPPORTS_MONITORING_CONFIG:
+            monitoring = {
+                "enabled": bool(entry.settings.get("monitoring_enabled", True)),
+                "interval": int(entry.settings.get("monitoring_interval", 10)),
+            }
 
         self._set_state(address, "syncing")
         future = self._ble.submit(self._run_sync(
-            device, plugin, sync_time, push_alarms, alarms, previously_pushed))
+            device, plugin, sync_time, push_alarms, alarms, previously_pushed,
+            monitoring))
         future.add_done_callback(
             lambda f: GLib.idle_add(self._finish_sync, entry, f))
         return True
@@ -184,15 +240,15 @@ class DeviceManager(GObject.Object):
             return await coro_factory()
 
     async def _run_sync(self, device, plugin, sync_time, push_alarms,
-                        alarms, previously_pushed) -> dict:
+                        alarms, previously_pushed, monitoring=None) -> dict:
         return await self._guarded(
             lambda: self._sync_pipeline(device, plugin, sync_time,
                                         push_alarms, alarms,
-                                        previously_pushed),
+                                        previously_pushed, monitoring),
             plugin.EXCLUSIVE_TRANSPORT)
 
     async def _sync_pipeline(self, device, plugin, sync_time, push_alarms,
-                             alarms, previously_pushed) -> dict:
+                             alarms, previously_pushed, monitoring=None) -> dict:
         """One full watch sync: connect → time → alarms → battery →
         health reads → sync() → disconnect → ingest."""
         result: dict = {"battery": None, "warnings": [], "pushed_ids": None}
@@ -209,6 +265,15 @@ class DeviceManager(GObject.Object):
                 await device.sync_time(time.time())
             elif sync_time:
                 result["warnings"].append("time sync not supported")
+            if monitoring is not None and plugin.SUPPORTS_MONITORING_CONFIG:
+                # A config push failure shouldn't abort the data read.
+                try:
+                    await device.configure_monitoring(
+                        monitoring["enabled"], monitoring["interval"])
+                except Exception:
+                    log.exception("monitoring config failed: %s",
+                                  device.address)
+                    result["warnings"].append("monitoring config failed")
             if push_alarms and plugin.SUPPORTS_ALARM_PUSH:
                 result["pushed_ids"] = await device.push_alarms(
                     alarms, previously_pushed_ids=previously_pushed)
@@ -217,7 +282,7 @@ class DeviceManager(GObject.Object):
             result["battery"] = await device.get_battery()
 
             activity = activity_series = hr_samples = None
-            sleep_series = workout_series = None
+            sleep_series = workout_series = hydration_series = None
             if plugin.SUPPORTS_ACTIVITY_READ:
                 # Streaming sources (Pebble) return per-minute deltas;
                 # cumulative sources (Bangle/PineTime) return None here
@@ -229,6 +294,8 @@ class DeviceManager(GObject.Object):
                 sleep_series = await device.get_sleep_series()
             if plugin.SUPPORTS_WORKOUT_READ:
                 workout_series = await device.get_workout_series()
+            if plugin.SUPPORTS_HYDRATION_READ:
+                hydration_series = await device.get_hydration_series()
             if (plugin.SUPPORTS_WEATHER_PUSH and self._settings is not None
                     and self._settings.get_boolean("weather-enabled")):
                 await self._push_weather(device, result)
@@ -253,6 +320,10 @@ class DeviceManager(GObject.Object):
             envelopes.append(build_workout_record(WorkoutSample(
                 device_address=device.address, device_name=device.name,
                 workout=workout)))
+        for drink in hydration_series or []:
+            envelopes.append(build_hydration_record(HydrationSample(
+                device_address=device.address, device_name=device.name,
+                reading=drink)))
         if envelopes:
             self._recorder.ingest_from_thread(envelopes)
         result["records"] = len(envelopes)

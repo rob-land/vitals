@@ -19,6 +19,7 @@ python.install_sources(
     'pages/__init__.py',
     'pages/dashboard.py',
     'pages/timeline.py',
+    'pages/metric_detail.py',
     'pages/devices.py',
     'pages/device_detail.py',
   ),
@@ -38,14 +39,18 @@ python.install_sources(
 python.install_sources(
   files(
     'devices/__init__.py',
+    'devices/and_oximeter.py',
     'devices/base.py',
     'devices/bangle.py',
     'devices/bangle_dfu.py',
     'devices/bangle_store.py',
     'devices/manager.py',
+    'devices/omron_bp.py',
     'devices/pinetime.py',
     'devices/store.py',
+    'devices/waterh_bottle.py',
     'devices/weather.py',
+    'devices/yucheng_ring.py',
   ),
   subdir: meson.project_name() / 'devices',
 )
@@ -126,6 +131,7 @@ python.install_sources(
   files(
     'sources/__init__.py',
     'sources/food.py',
+    'sources/food_cache.py',
     'sources/food_lookup.py',
     'sources/measurements.py',
     'sources/usda.py',

@@ -1,9 +1,10 @@
-"""Timeline page — everything entered, newest first, grouped by day.
+"""Timeline page — a day-addressed ledger of everything logged.
 
-Shows discrete events (meals, water, readings, workouts, sleep); the
-high-frequency sensed streams (per-minute steps/heart-rate/energy) stay
-on the Dashboard as aggregates, with each day's step total surfaced in
-that day's header instead.
+Shows one day at a time (default today), navigable by a date pager and a
+calendar jump so any past day is reachable. Lists that day's discrete
+events (meals, water, readings, workouts, sleep), newest first, with the
+day's step total in the header; the high-frequency sensed streams
+(per-minute steps/heart-rate/energy) stay on the Dashboard as aggregates.
 """
 
 from __future__ import annotations
@@ -17,11 +18,9 @@ from gi.repository import Adw, Gtk
 from vitals.core.catalog import Catalog
 from vitals.core.store import Store
 from vitals.format import format_measurement, format_value, humanize_key
-from vitals.pages import Page, local_day_start, local_tz_name, to_ms
+from vitals.pages import Page, local_tz_name, to_ms
 
 log = logging.getLogger(__name__)
-
-_WINDOW_DAYS = 30
 
 # Event-y types listed on the timeline, i.e. everything except the
 # per-minute sensed streams. dietary_energy is also absent: the food
@@ -43,49 +42,89 @@ class Timeline(Page):
         super().__init__()
         self._store = store
         self._catalog = catalog
+        self._day = datetime.now().astimezone().date()
+
+        # Date pager: ◀  [date → calendar]  ▶   Today
+        bar = Gtk.Box(spacing=6, margin_top=8, margin_bottom=4,
+                      margin_start=12, margin_end=12)
+        self._prev = Gtk.Button(icon_name="go-previous-symbolic",
+                                css_classes=["flat"], tooltip_text="Previous day")
+        self._prev.connect("clicked", lambda _b: self._shift(-1))
+        self._date_btn = Gtk.MenuButton(hexpand=True, css_classes=["flat"])
+        self._date_label = Gtk.Label(css_classes=["title-4"])
+        self._date_btn.set_child(self._date_label)
+        self._cal_pop = Gtk.Popover()
+        self._calendar = Gtk.Calendar()
+        self._calendar.connect("day-selected", self._on_calendar_pick)
+        self._cal_pop.set_child(self._calendar)
+        self._date_btn.set_popover(self._cal_pop)
+        self._next = Gtk.Button(icon_name="go-next-symbolic",
+                                css_classes=["flat"], tooltip_text="Next day")
+        self._next.connect("clicked", lambda _b: self._shift(1))
+        self._today_btn = Gtk.Button(label="Today", css_classes=["flat"])
+        self._today_btn.connect("clicked", lambda _b: self._go_today())
+        for w in (self._prev, self._date_btn, self._next, self._today_btn):
+            bar.append(w)
+        self.append(bar)
 
         self._scroller = Gtk.ScrolledWindow(
             hscrollbar_policy=Gtk.PolicyType.NEVER, vexpand=True)
         self.append(self._scroller)
 
-        self._empty = Adw.StatusPage(
-            icon_name="document-open-recent-symbolic",
-            title="Nothing logged yet",
-            description="Entries from your devices and manual logs will "
-                        "appear here.")
+    # ── day navigation ────────────────────────────────────────────
+    def _shift(self, days: int) -> None:
+        self._day = self._day + timedelta(days=days)
+        self.refresh()
+
+    def _go_today(self) -> None:
+        self._day = datetime.now().astimezone().date()
+        self.refresh()
+
+    def _on_calendar_pick(self, calendar) -> None:
+        if not self._cal_pop.get_visible():
+            return
+        gd = calendar.get_date()
+        picked = date(gd.get_year(), gd.get_month(), gd.get_day_of_month())
+        if picked <= datetime.now().astimezone().date():
+            self._day = picked
+            self.refresh()
+        self._cal_pop.popdown()
 
     def refresh(self) -> None:
-        start = to_ms(local_day_start(_WINDOW_DAYS - 1))
+        today = datetime.now().astimezone().date()
+        self._date_label.set_label(_day_title(self._day))
+        self._next.set_sensitive(self._day < today)
+        self._today_btn.set_visible(self._day != today)
+
+        start_dt = datetime(self._day.year, self._day.month,
+                            self._day.day).astimezone()
+        start, end = to_ms(start_dt), to_ms(start_dt + timedelta(days=1))
         rows, _ = self._store.read_records(_EVENT_TYPES, start_ms=start,
-                                           limit=10000)
+                                           end_ms=end, limit=10000)
         if not rows:
-            self._scroller.set_child(self._empty)
+            self._scroller.set_child(Adw.StatusPage(
+                icon_name="document-open-recent-symbolic",
+                title="Nothing logged",
+                description=("Log food, water or a measurement to see it here."
+                             if self._day == today
+                             else "No entries on this day.")))
             return
 
-        steps_by_day = {
-            b["start"][:10]: b["value"]
-            for b in self._store.aggregate("step_count", "sum", "day",
-                                           start_ms=start, tz=local_tz_name())}
-
-        clamp = Adw.Clamp(maximum_size=560, margin_top=18, margin_bottom=18,
+        steps = {b["start"][:10]: b["value"]
+                 for b in self._store.aggregate("step_count", "sum", "day",
+                                                start_ms=start, end_ms=end,
+                                                tz=local_tz_name())}
+        clamp = Adw.Clamp(maximum_size=560, margin_top=4, margin_bottom=18,
                           margin_start=12, margin_end=12)
-        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=18)
-        clamp.set_child(box)
-
-        current_day: date | None = None
-        group: Adw.PreferencesGroup | None = None
-        for row in reversed(rows):  # newest first
+        group = Adw.PreferencesGroup()
+        day_steps = steps.get(self._day.isoformat())
+        if day_steps:
+            group.set_description(f"{format_value(day_steps)} steps")
+        for row in reversed(rows):  # newest first within the day
             when = datetime.fromtimestamp(
                 row["effective_start"] / 1000).astimezone()
-            if when.date() != current_day:
-                current_day = when.date()
-                group = Adw.PreferencesGroup(title=_day_title(current_day))
-                steps = steps_by_day.get(current_day.isoformat())
-                if steps:
-                    group.set_description(f"{format_value(steps)} steps")
-                box.append(group)
             group.add(self._make_row(row, when))
-
+        clamp.set_child(group)
         self._scroller.set_child(clamp)
 
     # ── row rendering ─────────────────────────────────────────────
@@ -100,7 +139,19 @@ class Timeline(Page):
             suffix = Gtk.Label(label=value)
             suffix.add_css_class("title-4")
             action.add_suffix(suffix)
+        # Tapping a scalar reading opens its history view.
+        td = self._catalog.get(row["type"])
+        if td and td.value_shape == "scalar":
+            action.set_activatable(True)
+            action.add_suffix(Gtk.Image.new_from_icon_name("go-next-symbolic"))
+            action.connect("activated",
+                           lambda _r, k=row["type"]: self._open_metric(k))
         return action
+
+    def _open_metric(self, type_key: str) -> None:
+        root = self.get_root()
+        if root is not None:
+            root.push_metric_detail(type_key)
 
     def _describe(self, row) -> tuple[str, str, str]:
         """(title, value text, subtitle) for one stored record."""

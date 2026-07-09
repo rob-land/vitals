@@ -8,7 +8,8 @@ the same attributes keep these golden tests self-contained.
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
-from vitals.ingest import (HealthSample, SleepSample, WorkoutSample,
+from vitals.ingest import (HealthSample, HydrationSample, SleepSample,
+                           WorkoutSample, build_hydration_record,
                            build_records, build_sleep_record,
                            build_workout_record)
 
@@ -51,6 +52,14 @@ class Workout:  # mirrors devices.base.WorkoutSession
     @property
     def duration_seconds(self) -> float:
         return self.end - self.start
+
+
+@dataclass(frozen=True)
+class Hydration:  # mirrors devices.base.HydrationReading
+    amount_ml: float
+    timestamp: float
+    temperature_c: float | None = None
+    tds_ppm: int | None = None
 
 
 def _sample(steps=4321, bpm=72, conf=90, ts=TS, name="PineTime"):
@@ -215,3 +224,35 @@ def test_workout_record_omits_absent_metrics():
     assert "steps" not in v and "distance_meters" not in v
     assert "active_energy_kcal" not in v
     assert v["activity_name"] == "run"
+
+
+# ── hydration ─────────────────────────────────────────────────────
+def _hydration_sample(**kw):
+    return HydrationSample(device_address=ADDR, device_name="WaterH Bottle",
+                           reading=Hydration(**kw))
+
+
+def test_hydration_record_scalar_ml():
+    rec = build_hydration_record(
+        _hydration_sample(amount_ml=250.0, timestamp=TS))
+    assert rec["type"] == "water_intake"
+    assert rec["value"] == 250.0
+    assert rec["unit"] == "mL"
+    assert rec["source"]["modality"] == "sensed"
+    # deterministic per-drink uuid so a re-drained log upserts
+    assert rec["uuid"] == f"tock:{ADDR}:water_intake:{int(TS)}"
+    assert "meta" not in rec
+
+
+def test_hydration_record_carries_water_quality_meta():
+    rec = build_hydration_record(
+        _hydration_sample(amount_ml=330.0, timestamp=TS,
+                          temperature_c=21.0, tds_ppm=48))
+    assert rec["meta"] == {"water_temperature_c": 21.0, "tds_ppm": 48}
+
+
+def test_hydration_record_uuid_is_per_second():
+    a = build_hydration_record(_hydration_sample(amount_ml=100.0, timestamp=TS))
+    b = build_hydration_record(
+        _hydration_sample(amount_ml=100.0, timestamp=TS + 60))
+    assert a["uuid"] != b["uuid"]

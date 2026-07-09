@@ -70,6 +70,13 @@ class BangleDevice(Device):
     id = "bangle"
     display_name = "Bangle.js"
     description = "Espruino-based smartwatch (Bangle.js 1, Bangle.js 2)"
+    CATEGORY = "watch"
+    ICON_NAME = "phone-symbolic"
+    PAIRING_STEPS = [
+        "On the Bangle, make sure Bluetooth is on and it isn't already "
+        "connected to another phone.",
+        "Keep the watch awake (tap the screen) and nearby, then search.",
+    ]
 
     SUPPORTS_TIME_SYNC     = True
     SUPPORTS_ALARM_PUSH    = True
@@ -92,6 +99,15 @@ class BangleDevice(Device):
         if advertised_name and advertised_name.lower().startswith("bangle"):
             return True
         return NUS_UUID in [u.lower() for u in service_uuids]
+
+    @classmethod
+    def match_specificity(cls, advertised_name, service_uuids) -> int:
+        # A "Bangle" name is a strong signal; matching on Nordic UART
+        # alone is not — plenty of unrelated devices (including Yucheng
+        # rings) expose NUS, so that fallback must yield to a vendor match.
+        if advertised_name and advertised_name.lower().startswith("bangle"):
+            return cls.MATCH_SPECIFIC
+        return cls.MATCH_SHARED_TRANSPORT
 
     def __init__(self, address: str, name: str = ""):
         super().__init__(address, name)

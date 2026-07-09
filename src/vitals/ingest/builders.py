@@ -62,6 +62,15 @@ class WorkoutSample:
     workout: Any
 
 
+@dataclass(frozen=True)
+class HydrationSample:
+    """One logged drink tagged with the bottle it came from."""
+
+    device_address: str
+    device_name: str
+    reading: Any
+
+
 def build_records(sample: HealthSample) -> list[dict]:
     r = sample.reading
     # Watch readings always carry a real wall-clock timestamp.
@@ -198,6 +207,43 @@ def _sleep_stages(s) -> list[dict]:
         stages.append({"stage": "light", "start": iso(cursor),
                        "end": iso(s.end)})
     return stages
+
+
+def build_hydration_record(sample: HydrationSample) -> dict:
+    """One ``water_intake`` (scalar mL) per logged drink.
+
+    A bottle keeps its drink log until Vitals acknowledges receipt, so a
+    sync can legitimately re-see drinks it already stored. The uuid keys
+    on the drink's timestamp — the bottle logs at most one drink per
+    second — so a re-drained drink UPSERTS instead of double-counting.
+
+    Water temperature and TDS (water quality) ride along in ``meta`` when
+    the bottle has those sensors; plainer models leave them None and the
+    keys are simply absent.
+    """
+    r = sample.reading
+    local = datetime.fromtimestamp(r.timestamp or 0.0, tz=timezone.utc).astimezone()
+    device = sample.device_address or sample.device_name or "unknown"
+    record = {
+        "uuid": f"tock:{device}:water_intake:{int(r.timestamp)}",
+        "type": "water_intake",
+        "effective_start": local.isoformat(),
+        "value": round(r.amount_ml, 1),
+        "unit": "mL",
+        "source": {
+            "modality": "sensed",
+            "device_id": sample.device_address or None,
+            "device_name": sample.device_name or None,
+        },
+    }
+    meta: dict = {}
+    if r.temperature_c is not None:
+        meta["water_temperature_c"] = round(r.temperature_c, 1)
+    if r.tds_ppm is not None:
+        meta["tds_ppm"] = r.tds_ppm
+    if meta:
+        record["meta"] = meta
+    return record
 
 
 def build_workout_record(sample: WorkoutSample) -> dict:

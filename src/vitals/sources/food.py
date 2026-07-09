@@ -12,9 +12,11 @@ from __future__ import annotations
 
 import logging
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from gi.repository import Adw, GLib, Gtk
+
+from vitals.sources import food_cache
 
 log = logging.getLogger(__name__)
 
@@ -35,6 +37,47 @@ MEALS: list[tuple[str, str]] = [
     ("Dinner", "dinner"), ("Snack", "snack"),
 ]
 _MEAL_KEYS = [m[1] for m in MEALS]
+_MEAL_LABELS = {m[1]: m[0] for m in MEALS}
+
+
+def summarize_meals(rows) -> list[dict]:
+    """Group ``nutrient_intake`` store rows into per-meal totals, in daily
+    meal order (breakfast → snack, then anything else).
+
+    Each meal is ``{meal, label, kcal, item_count, foods}`` where every
+    food is ``{label, kcal, when_ms}``. Pure over the rows' documented
+    columns (``value_json``, ``meta_json``, ``effective_start``) so it's
+    testable without a store.
+    """
+    import json
+
+    by_meal: dict[str, list[dict]] = {}
+    for row in rows:
+        meta = json.loads(row["meta_json"] or "{}")
+        meal = meta.get("meal") or "other"
+        value = json.loads(row["value_json"] or "{}")
+        kcal = value.get("nutrients", {}).get("energy-kcal", {}).get("value")
+        by_meal.setdefault(meal, []).append({
+            "label": value.get("label") or "Food",
+            "kcal": float(kcal) if kcal else 0.0,
+            "when_ms": row["effective_start"],
+        })
+
+    order = _MEAL_KEYS + [m for m in by_meal if m not in _MEAL_KEYS]
+    out = []
+    for meal in order:
+        foods = by_meal.get(meal)
+        if not foods:
+            continue
+        foods.sort(key=lambda f: f["when_ms"])
+        out.append({
+            "meal": meal,
+            "label": _MEAL_LABELS.get(meal, meal.replace("_", " ").title()),
+            "kcal": round(sum(f["kcal"] for f in foods)),
+            "item_count": len(foods),
+            "foods": foods,
+        })
+    return out
 
 
 def build_record(label: str, meal: str, nutrients: dict[str, float],
@@ -133,6 +176,11 @@ class FoodDialog(Adw.Dialog):
         lookup.connect("clicked", self._on_lookup)
         box.append(lookup)
 
+        # Recent foods — tap one to fill the form without re-typing.
+        self._recent_group = Adw.PreferencesGroup(title="Recent")
+        box.append(self._recent_group)
+        self._populate_recents()
+
         group = Adw.PreferencesGroup()
 
         self._food_row = Adw.EntryRow(title="Food (optional)")
@@ -145,6 +193,27 @@ class FoodDialog(Adw.Dialog):
             self._meal_combo.set_selected(_MEAL_KEYS.index(last))
         self._meal_combo.connect("notify::selected", self._on_meal_changed)
         group.add(self._meal_combo)
+
+        # When it was eaten — defaults to "now" until the user adjusts it.
+        self._time_touched = False
+        now = datetime.now()
+        self._when_row = Adw.ExpanderRow(title="Time", subtitle="Now")
+        self._day_combo = Adw.ComboRow(
+            title="Day", model=Gtk.StringList.new(["Today", "Yesterday"]))
+        self._hour_spin = Adw.SpinRow(
+            title="Hour", adjustment=Gtk.Adjustment(
+                lower=0, upper=23, step_increment=1, value=now.hour))
+        self._minute_spin = Adw.SpinRow(
+            title="Minute", adjustment=Gtk.Adjustment(
+                lower=0, upper=59, step_increment=1, value=now.minute))
+        self._when_row.add_row(self._day_combo)
+        self._when_row.add_row(self._hour_spin)
+        self._when_row.add_row(self._minute_spin)
+        for widget, signal in ((self._day_combo, "notify::selected"),
+                               (self._hour_spin, "notify::value"),
+                               (self._minute_spin, "notify::value")):
+            widget.connect(signal, self._on_time_changed)
+        group.add(self._when_row)
 
         for nutrient in NUTRIENTS:
             row = Adw.SpinRow(
@@ -164,6 +233,42 @@ class FoodDialog(Adw.Dialog):
         log_button.add_css_class("pill")
         log_button.connect("clicked", self._on_log)
         box.append(log_button)
+
+    # ── recent foods ──────────────────────────────────────────────
+    def _populate_recents(self) -> None:
+        items = food_cache.load()[:8]
+        self._recent_group.set_visible(bool(items))
+        for entry in items:
+            row = Adw.ActionRow(title=entry["label"], activatable=True)
+            kcal = entry.get("nutrients", {}).get("energy-kcal")
+            if kcal:
+                row.set_subtitle(f"{int(kcal)} kcal")
+            row.add_suffix(Gtk.Image.new_from_icon_name("list-add-symbolic"))
+            row.connect("activated", self._on_recent_activated, entry)
+            self._recent_group.add(row)
+
+    def _on_recent_activated(self, _row, entry) -> None:
+        self._apply_food(entry["label"], entry.get("nutrients", {}),
+                         entry.get("amount_g"), entry.get("barcode"))
+        self._toast(f"Filled from {entry['label']}")
+
+    # ── consumed-at time ──────────────────────────────────────────
+    def _on_time_changed(self, *_):
+        self._time_touched = True
+        when = self._chosen_when()
+        self._when_row.set_subtitle(when.strftime("%a %d %b, %H:%M"))
+
+    def _chosen_when(self) -> datetime:
+        """The consumed-at time. Left untouched it tracks the real clock
+        so a quick log lands at 'now'; once adjusted it's the picked
+        day + time."""
+        if not self._time_touched:
+            return datetime.now(timezone.utc).astimezone()
+        days_ago = self._day_combo.get_selected()
+        return (datetime.now().astimezone().replace(
+            hour=int(self._hour_spin.get_value()),
+            minute=int(self._minute_spin.get_value()),
+            second=0, microsecond=0) - timedelta(days=days_ago))
 
     # ── state ─────────────────────────────────────────────────────
     def _current_meal(self) -> str:
@@ -213,7 +318,7 @@ class FoodDialog(Adw.Dialog):
             self._toast("Enter at least the calories")
             return
         label = self._food_row.get_text().strip()
-        when = datetime.now(timezone.utc).astimezone()
+        when = self._chosen_when()
         records = build_meal_records(
             label, self._current_meal(), nutrients, when.isoformat(),
             str(uuid.uuid4()), amount_g=self._amount, barcode=self._barcode)
@@ -222,6 +327,8 @@ class FoodDialog(Adw.Dialog):
         if summary["rejected"]:
             self._toast(f"Couldn’t log: {summary['rejected'][0][1]}")
             return
+        # Cache the named food so it can be re-added without re-typing.
+        food_cache.remember(label, nutrients, self._amount, self._barcode)
         self._toast(f"Logged {label or 'food'}")
         self.close()
 

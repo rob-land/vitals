@@ -85,7 +85,49 @@ class BluetoothMonitor(GObject.GObject):
         self._sub_ids.clear()
         self._bus = None
 
+    def power_on(self) -> bool:
+        """Ensure the BLE adapter is powered (set ``Adapter1.Powered``).
+
+        Some hosts — notably Halium phones — power the controller down
+        when nothing is scanning or connected, so an otherwise-idle
+        Vitals would see every timed sync fail with "no powered adapter".
+        Vitals powers it back up before syncing rather than depending on
+        the user to. Returns True if the adapter is (now) powered.
+        Requires ``start()`` first; safe to call from the main thread.
+        """
+        if self._bus is None:
+            return False
+        path = self._adapter_path()
+        if path is None:
+            return False
+        try:
+            self._bus.call_sync(
+                _BLUEZ, path, _PROPS_IFACE, "Set",
+                GLib.Variant("(ssv)", (_ADAPTER_IFACE, "Powered",
+                                       GLib.Variant("b", True))),
+                None, Gio.DBusCallFlags.NONE, 3000, None)
+            return True
+        except GLib.Error:
+            log.exception("BluetoothMonitor: could not power on the adapter")
+            return False
+
     # ── Internal ──────────────────────────────────────────────────
+
+    def _adapter_path(self) -> str | None:
+        """The object path of the first BLE adapter, or None."""
+        if self._bus is None:
+            return None
+        try:
+            reply = self._bus.call_sync(
+                _BLUEZ, "/", _OBJ_MANAGER, "GetManagedObjects", None,
+                GLib.VariantType("(a{oa{sa{sv}}})"),
+                Gio.DBusCallFlags.NONE, 2000, None)
+        except GLib.Error:
+            return None
+        for path, ifaces in reply.unpack()[0].items():
+            if _ADAPTER_IFACE in ifaces:
+                return path
+        return None
 
     def _refresh(self) -> None:
         new_state = self._query_state()

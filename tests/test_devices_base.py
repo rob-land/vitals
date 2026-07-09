@@ -73,6 +73,42 @@ def test_matching_device_no_match():
     assert cls is None
 
 
+# ── match specificity: most-specific plugin wins ─────────────────
+# A real Yucheng ring (TK5) advertises its vendor service *and* Nordic
+# UART *and* standard Heart Rate at once, so bangle (NUS), the sensor
+# catch-all (HR) and the ring plugin (be94) all match. The vendor
+# service is the strongest identity, so the ring must win.
+_TK5_UUIDS = [
+    "00001800-0000-1000-8000-00805f9b34fb",
+    "0000180d-0000-1000-8000-00805f9b34fb",          # standard Heart Rate
+    "0000ae00-0000-1000-8000-00805f9b34fb",          # Jieli
+    "6e400001-b5a3-f393-e0a9-e50e24dcca9e",          # Nordic UART
+    "be940000-7333-be46-b7ae-689e71722bd5",          # Yucheng vendor svc
+]
+
+
+def test_multi_service_ring_matches_vendor_plugin():
+    assert matching_device("TK5 DEA8", _TK5_UUIDS).id == "yucheng_ring"
+
+
+def test_bare_nordic_uart_still_matches_bangle():
+    # A pure-NUS device (no vendor service) still goes to bangle.
+    cls = matching_device("SomeGadget", ["6e400001-b5a3-f393-e0a9-e50e24dcca9e"])
+    assert cls.id == "bangle"
+
+
+def test_plain_hr_device_goes_to_sensor_plugin():
+    # Standard Heart Rate only, no proprietary service → the catch-all.
+    cls = matching_device("Polar H10", ["0000180d-0000-1000-8000-00805f9b34fb"])
+    assert cls.id == "gatt-sensor"
+
+
+def test_specificity_ordering():
+    from vitals.devices.base import Device
+    assert (Device.MATCH_VENDOR_SERVICE > Device.MATCH_SPECIFIC
+            > Device.MATCH_SHARED_TRANSPORT > Device.MATCH_GENERIC_FALLBACK)
+
+
 # ── External plugin discovery via entry_points ───────────────────
 
 class _FakeEntryPoint:

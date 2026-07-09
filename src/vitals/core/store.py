@@ -205,18 +205,53 @@ class Store:
 
     # -- aggregation ---------------------------------------------------
     def aggregate(self, type_key: str, op: str, bucket: str,
-                  start_ms=None, end_ms=None, tz="UTC", modality=None) -> list[dict]:
-        """Bucket a scalar type over time. Buckets honour the given tz."""
-        where = ["type = ?", "deleted = 0", "value_num IS NOT NULL"]
+                  start_ms=None, end_ms=None, tz="UTC", modality=None,
+                  source_trust: dict[str, int] | None = None,
+                  discrepancy_threshold: float | None = None,
+                  value_range: tuple[float, float] | None = None) -> list[dict]:
+        """Bucket a scalar type over time. Buckets honour the given tz.
+
+        By default every sample in a bucket is aggregated together,
+        regardless of which device produced it. That double-counts
+        additive metrics (steps reported by two devices) and blends point
+        metrics across quality tiers.
+
+        Pass ``source_trust`` — a ``{device_id: rank}`` map (higher =
+        more trusted; ``""`` is the manual-entry / no-device source) — to
+        resolve each bucket to a *single* source: the highest-ranked
+        source present, breaking ties by sample count then id. The op is
+        then applied to only that source's values, and each result
+        carries the chosen ``source``. This is the correct cross-source
+        behaviour; without the map the legacy behaviour is unchanged.
+        """
+        # Joining to `sources` (for the device id) forces table aliases;
+        # `col` qualifies column names only when we join.
+        resolving = source_trust is not None
+        if resolving:
+            select = ("s.effective_start AS effective_start, "
+                      "s.value_num AS value_num, src.device_id AS device_id")
+            table = "samples s JOIN sources src ON s.source_id = src.id"
+            col = lambda c: "s." + c  # noqa: E731
+        else:
+            select = "effective_start, value_num"
+            table = "samples"
+            col = lambda c: c  # noqa: E731
+        where = [f"{col('type')} = ?", f"{col('deleted')} = 0",
+                 f"{col('value_num')} IS NOT NULL"]
         params: list = [type_key]
         if start_ms is not None:
-            where.append("effective_start >= ?"); params.append(start_ms)
+            where.append(f"{col('effective_start')} >= ?"); params.append(start_ms)
         if end_ms is not None:
-            where.append("effective_start < ?"); params.append(end_ms)
+            where.append(f"{col('effective_start')} < ?"); params.append(end_ms)
         if modality:
-            where.append("modality = ?"); params.append(modality)
+            where.append(f"{col('modality')} = ?"); params.append(modality)
+        if value_range is not None:
+            # Drop physiologically impossible samples (sensor glitches like a
+            # 0-bpm heart rate) before they corrupt the min/avg/max.
+            where.append(f"{col('value_num')} >= ?"); params.append(value_range[0])
+            where.append(f"{col('value_num')} <= ?"); params.append(value_range[1])
         rows = self._con.execute(
-            f"SELECT effective_start, value_num FROM samples WHERE {' AND '.join(where)}",
+            f"SELECT {select} FROM {table} WHERE {' AND '.join(where)}",
             params,
         ).fetchall()
 
@@ -224,19 +259,70 @@ class Store:
             zone = ZoneInfo(tz)
         except Exception:
             zone = timezone.utc
-        groups: dict[str, list[float]] = {}
+
+        if not resolving:
+            groups: dict[str, list[float]] = {}
+            for row in rows:
+                key = _bucket_key(row["effective_start"], bucket, zone)
+                groups.setdefault(key, []).append(row["value_num"])
+            return [{"start": key, "value": _apply_op(op, groups[key]),
+                     "n": len(groups[key])} for key in sorted(groups)]
+
+        # Source-resolved: bucket -> device_id -> values.
+        by_bucket: dict[str, dict[str, list[float]]] = {}
         for row in rows:
             key = _bucket_key(row["effective_start"], bucket, zone)
-            groups.setdefault(key, []).append(row["value_num"])
+            dev = row["device_id"] or ""
+            by_bucket.setdefault(key, {}).setdefault(dev, []).append(
+                row["value_num"])
 
         out = []
-        for key in sorted(groups):
-            vals = groups[key]
-            out.append({"start": key, "value": _apply_op(op, vals), "n": len(vals)})
+        for key in sorted(by_bucket):
+            per_source = by_bucket[key]
+            chosen = _pick_source(per_source, source_trust)
+            vals = per_source[chosen]
+            entry = {"start": key, "value": _apply_op(op, vals),
+                     "n": len(vals), "source": chosen}
+            # Flag the sources we dropped that materially disagree with the
+            # chosen one, so the UI can surface it instead of hiding them.
+            if discrepancy_threshold is not None and len(per_source) > 1:
+                others = {d: _apply_op(op, v) for d, v in per_source.items()
+                          if d != chosen}
+                disagree = {d: round(val, 2) for d, val in others.items()
+                            if _relative_diff(entry["value"], val)
+                            > discrepancy_threshold}
+                if disagree:
+                    entry["discrepancy"] = disagree
+            out.append(entry)
         return out
+
+    def types_for_device(self, device_id: str) -> list[str]:
+        """The distinct record types a source (by device_id; "" is the
+        manual-entry / no-device source) has produced."""
+        rows = self._con.execute(
+            "SELECT DISTINCT s.type FROM samples s "
+            "JOIN sources src ON s.source_id = src.id "
+            "WHERE src.device_id = ? AND s.deleted = 0 ORDER BY s.type",
+            (device_id or "",),
+        ).fetchall()
+        return [r["type"] for r in rows]
 
 
 # -- helpers -----------------------------------------------------------
+def _pick_source(per_source: dict[str, list[float]],
+                 trust: dict[str, int]) -> str:
+    """The device_id to represent a bucket: highest trust, then the one
+    with the most samples, then a stable id order."""
+    return max(per_source,
+               key=lambda dev: (trust.get(dev, 0), len(per_source[dev]), dev))
+
+
+def _relative_diff(a: float, b: float) -> float:
+    """Relative difference between two values, robust near zero."""
+    denom = max(abs(a), abs(b), 1.0)
+    return abs(a - b) / denom
+
+
 def _apply_op(op: str, vals: list[float]) -> float:
     if op == "sum":
         return sum(vals)

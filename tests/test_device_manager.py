@@ -105,6 +105,87 @@ def test_sync_pipeline_order_and_ingest(rig):
     assert result["records"] == 3
 
 
+def test_source_trust_ranks_by_quality_and_preference(rig):
+    manager, _store, _ = rig
+    manager.add("AA:BB", "Fake One", "fakewatch")                 # medium
+    manager.add("07:32:00:00:00:01", "HR Strap", "gatt-sensor")   # high HR
+
+    trust = manager.source_trust("heart_rate")
+    assert trust["07:32:00:00:00:01"] == 30   # dedicated sensor: high
+    assert trust["AA:BB"] == 20                # watch: default medium
+    assert trust[""] == 20                     # manual-entry baseline
+    # A metric the sensor doesn't rate falls back to medium.
+    assert manager.source_trust("step_count")["07:32:00:00:00:01"] == 20
+    # A user-pinned device wins outright.
+    manager.update_settings("AA:BB", {"preferred_metrics": ["heart_rate"]})
+    assert manager.source_trust("heart_rate")["AA:BB"] == 120
+
+
+def test_contested_metrics(rig):
+    from vitals.core import records as rec_mod
+    from vitals.core.catalog import Catalog
+    manager, store, _ = rig
+    cat = Catalog.load()
+
+    def rec(type_key, dev, unit):
+        return rec_mod.validate_and_canonicalize({
+            "uuid": f"{type_key}-{dev}", "type": type_key,
+            "effective_start": "2026-06-01T09:00:00+00:00", "value": 60,
+            "unit": unit,
+            "source": {"modality": "sensed", "device_id": dev,
+                       "device_name": dev},
+        }, cat.get(type_key))
+
+    manager.add("ring", "Ring", "fakewatch")
+    manager.add("peb", "Peb", "fakewatch")
+    store.insert_records([
+        rec("heart_rate", "ring", "/min"),
+        rec("step_count", "ring", "{steps}"),
+        rec("heart_rate", "peb", "/min"),
+    ], "test.app")
+    # heart_rate is reported by both; step_count only by the ring.
+    assert manager.contested_metrics("ring") == ["heart_rate"]
+    assert manager.contested_metrics("peb") == ["heart_rate"]
+
+
+def test_sync_device_powers_on_adapter(tmp_path):
+    """sync_device asks the BluetoothMonitor to power the adapter on
+    before a sync — hosts that idle it off would otherwise fail."""
+    import concurrent.futures
+
+    if "fakewatch" not in base._REGISTRY:
+        base.register_device(FakeWatch)
+    store = Store(str(tmp_path / "health.db"))
+    store.migrate()
+
+    class FakeSettings:
+        def get_boolean(self, _key):
+            return False
+
+    class FakeBle:
+        def submit(self, coro):
+            coro.close()  # don't actually run the pipeline
+            fut = concurrent.futures.Future()
+            fut.set_result({"battery": None, "warnings": [],
+                            "pushed_ids": None, "records": 0})
+            return fut
+
+    powered = []
+
+    class FakeBluetooth:
+        def power_on(self):
+            powered.append(True)
+            return True
+
+    manager = DeviceManager(store, FakeRecorder(), FakeSettings(),
+                            FakeBle(), bluetooth=FakeBluetooth())
+    manager.add(ADDR, "Fake One", "fakewatch")
+    assert manager.sync_device(ADDR) is True
+    assert powered == [True]
+    store.close()
+    base._REGISTRY.pop("fakewatch", None)
+
+
 def test_pipeline_disconnects_after_connect_failure(rig):
     manager, _store, recorder = rig
 

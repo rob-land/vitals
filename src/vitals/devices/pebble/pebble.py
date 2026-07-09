@@ -130,6 +130,13 @@ class PebbleDevice(Device):
     id = "pebble"
     display_name = "Pebble"
     description = "Pebble / Core Devices watch running PebbleOS firmware"
+    CATEGORY = "watch"
+    ICON_NAME = "phone-symbolic"
+    PAIRING_STEPS = [
+        "On the Pebble, open Settings → Bluetooth.",
+        "Keep it nearby and search. A factory-fresh Pebble showing a "
+        "setup screen is fine — you'll be offered to set it up.",
+    ]
 
     # Time sync, activity (steps/HR), and firmware flashing ride the
     # PPoGATT transport (PebbleGateway). Alarms and notifications are not

@@ -6,7 +6,8 @@ import logging
 
 from gi.repository import Adw, Gio, GLib, Gtk
 
-from vitals.ble import BleManager
+from vitals.ble import BleManager, BluetoothMonitor
+from vitals.ble.bluetooth_state import BluetoothState
 from vitals.ble.scan_broker import ScanBroker
 from vitals.const import APP_ID, APP_NAME, VERSION
 from vitals.core import migrate, resources
@@ -30,6 +31,7 @@ class VitalsApplication(Adw.Application):
         self.record_bus = RecordBus()
         self.recorder: Recorder | None = None
         self.ble: BleManager | None = None
+        self.bluetooth: BluetoothMonitor | None = None
         self.scan_broker: ScanBroker | None = None
         self.device_manager: DeviceManager | None = None
         self._adoption: dict | None = None
@@ -81,16 +83,36 @@ class VitalsApplication(Adw.Application):
         self.recorder = Recorder(self.store, self.catalog, self.record_bus)
         self.ble = BleManager()
         self.ble.start()
+        # Track adapter power and, on hosts that idle it off, turn it back
+        # on so timed syncs don't fail before they start.
+        self.bluetooth = BluetoothMonitor()
+        self.bluetooth.start()
+        self.bluetooth.power_on()
+        # Re-power the adapter the moment the host idles it off, so it's
+        # up and settled before a sync rather than racing a cold power-on.
+        self.bluetooth.connect("state-changed", self._on_bluetooth_state)
         self.scan_broker = ScanBroker(self.ble)
         self.device_manager = DeviceManager(
-            self.store, self.recorder, self.settings, self.ble)
+            self.store, self.recorder, self.settings, self.ble,
+            bluetooth=self.bluetooth)
         self.device_manager.attach_scan_broker(self.scan_broker)
         self.device_manager.reschedule_background_sync()
         self.settings.connect(
             "changed::background-sync-interval",
             lambda *_: self.device_manager.reschedule_background_sync())
 
+    def _on_bluetooth_state(self, _monitor, state) -> None:
+        # Hosts that idle the controller off would otherwise leave every
+        # sync failing; power it straight back on. Edge-triggered on the
+        # off transition, so a denied power-on can't spin.
+        if state == BluetoothState.POWERED_OFF and self.bluetooth is not None:
+            log.info("Bluetooth adapter powered off; powering back on")
+            self.bluetooth.power_on()
+
     def do_shutdown(self):
+        if self.bluetooth is not None:
+            self.bluetooth.stop()
+            self.bluetooth = None
         if self.ble is not None:
             self.ble.stop()
             self.ble = None

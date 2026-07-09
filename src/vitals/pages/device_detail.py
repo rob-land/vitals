@@ -18,11 +18,12 @@ log = logging.getLogger(__name__)
 class DeviceDetailPage(Adw.NavigationPage):
     __gtype_name__ = "VitalsDeviceDetailPage"
 
-    def __init__(self, manager, address: str):
+    def __init__(self, manager, address: str, catalog=None):
         entry = manager.get(address)
         super().__init__(title=entry.name if entry else "Device")
         self._manager = manager
         self._address = address
+        self._catalog = catalog  # for record-type titles in the trust UI
 
         toolbar = Adw.ToolbarView()
         toolbar.add_top_bar(Adw.HeaderBar())
@@ -105,7 +106,12 @@ class DeviceDetailPage(Adw.NavigationPage):
                         lambda row, _p: self._manager.set_enabled(
                             self._address, row.get_active()))
         settings.add(enabled)
+
+        if plugin is not None and plugin.SUPPORTS_MONITORING_CONFIG:
+            self._add_monitoring_rows(settings, entry)
         box.append(settings)
+
+        self._add_preference_group(box, entry)
 
         danger = Adw.PreferencesGroup()
         forget = Adw.ButtonRow(title="Forget This Device")
@@ -115,6 +121,91 @@ class DeviceDetailPage(Adw.NavigationPage):
         box.append(danger)
 
         self._scroller.set_child(clamp)
+
+    # ── source preference (overlapping metrics) ───────────────────
+    def _add_preference_group(self, box, entry) -> None:
+        """When another source also reports some of this device's metrics,
+        let the user pin which device wins for each. Persisted to the
+        registry so cross-source resolution honours it."""
+        contested = [m for m in self._manager.contested_metrics(self._address)
+                     if self._is_scalar(m)]
+        if not contested:
+            return
+        preferred = set(entry.settings.get("preferred_metrics", []))
+        group = Adw.PreferencesGroup(
+            title="Preferred source",
+            description="Another device also records these — prefer this "
+                        "one's readings when they overlap.")
+        for metric in contested:
+            row = Adw.SwitchRow(title=f"Prefer for {self._metric_title(metric)}")
+            row.set_active(metric in preferred)
+            row.connect(
+                "notify::active",
+                lambda r, _p, m=metric: self._on_preference_toggled(m, r))
+            group.add(row)
+        box.append(group)
+
+    def _is_scalar(self, metric: str) -> bool:
+        td = self._catalog.get(metric) if self._catalog else None
+        return td is not None and td.value_shape == "scalar"
+
+    def _metric_title(self, metric: str) -> str:
+        td = self._catalog.get(metric) if self._catalog else None
+        return (td.title if td else metric).lower()
+
+    def _on_preference_toggled(self, metric: str, switch) -> None:
+        entry = self._manager.get(self._address)
+        if entry is None:
+            return
+        preferred = set(entry.settings.get("preferred_metrics", []))
+        preferred.add(metric) if switch.get_active() else preferred.discard(metric)
+        self._manager.update_settings(
+            self._address, {"preferred_metrics": sorted(preferred)})
+        self._toast("Applies to the dashboard")
+
+    # ── monitoring config ─────────────────────────────────────────
+    _MONITOR_INTERVALS = [10, 20, 30, 60]
+
+    def _add_monitoring_rows(self, group, entry) -> None:
+        """Let the user turn the device's own periodic monitoring on/off
+        and set its interval — the device is configured from Vitals, no
+        vendor app needed. Applied on the next sync."""
+        monitor = Adw.SwitchRow(
+            title="Automatic monitoring",
+            subtitle="Have the device sample its sensors periodically "
+                     "(heart rate, SpO₂, temperature)")
+        monitor.set_active(bool(entry.settings.get("monitoring_enabled", True)))
+        group.add(monitor)
+
+        interval = Adw.ComboRow(
+            title="Monitoring interval",
+            model=Gtk.StringList.new(
+                [f"{m} min" for m in self._MONITOR_INTERVALS]))
+        current = int(entry.settings.get("monitoring_interval", 10))
+        interval.set_selected(self._MONITOR_INTERVALS.index(current)
+                              if current in self._MONITOR_INTERVALS else 0)
+        interval.set_sensitive(monitor.get_active())
+        group.add(interval)
+
+        monitor.connect(
+            "notify::active",
+            lambda row, _p, ir=interval: self._on_monitoring_toggled(row, ir))
+        interval.connect(
+            "notify::selected",
+            lambda row, _p: self._on_monitoring_interval(row.get_selected()))
+
+    def _on_monitoring_toggled(self, switch, interval_row) -> None:
+        active = switch.get_active()
+        self._manager.update_settings(
+            self._address, {"monitoring_enabled": active})
+        interval_row.set_sensitive(active)
+        self._toast("Monitoring updates on the next sync")
+
+    def _on_monitoring_interval(self, index: int) -> None:
+        minutes = self._MONITOR_INTERVALS[index]
+        self._manager.update_settings(
+            self._address, {"monitoring_interval": minutes})
+        self._toast("Monitoring updates on the next sync")
 
     # ── actions ───────────────────────────────────────────────────
     def _on_sync(self, *_):
