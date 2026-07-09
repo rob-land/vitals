@@ -25,6 +25,7 @@ from dataclasses import dataclass, field
 from gi.repository import GLib, GObject
 
 from vitals.devices.base import Device, available_devices
+from vitals.devices.keeper import ConnectionKeeper
 from vitals.ingest import (
     HealthSample, HydrationSample, SleepSample, WorkoutSample, build_records,
     build_hydration_record, build_sleep_record, build_workout_record)
@@ -75,6 +76,11 @@ class DeviceManager(GObject.Object):
         "device-state-changed": (GObject.SignalFlags.RUN_FIRST, None, (str, str)),
         # (address, message) — a sync finished; message is toast-ready.
         "device-synced": (GObject.SignalFlags.RUN_FIRST, None, (str, str)),
+        # The set of persistent links (notification forwarding) changed.
+        "links-changed": (GObject.SignalFlags.RUN_FIRST, None, ()),
+        # (address, connected) — a persistent link went up or down.
+        "link-state-changed": (GObject.SignalFlags.RUN_FIRST, None,
+                               (str, bool)),
     }
 
     def __init__(self, store, recorder, settings, ble, bluetooth=None):
@@ -93,6 +99,8 @@ class DeviceManager(GObject.Object):
         self._connect_sem: asyncio.Semaphore | None = None
         self._bg_sync_id: int | None = None
         self._broker = None
+        # Persistent links (ConnectionKeeper) for notification forwarding.
+        self._keepers: dict[str, ConnectionKeeper] = {}
         # Sensor addresses currently mid-read (BLE loop only).
         self._sensor_busy: set[str] = set()
         self._load()
@@ -161,6 +169,7 @@ class DeviceManager(GObject.Object):
                 (address, name, kind, role, "{}", round(time.time() * 1000)))
         self._load()
         self.emit("device-list-changed")
+        self.reconcile_links()
         return self._entries[address]
 
     def forget(self, address: str) -> None:
@@ -168,6 +177,7 @@ class DeviceManager(GObject.Object):
             con.execute("DELETE FROM devices WHERE address=?", (address,))
         self._entries.pop(address, None)
         self.emit("device-list-changed")
+        self.reconcile_links()
 
     def set_enabled(self, address: str, enabled: bool) -> None:
         with self._store.connection as con:
@@ -177,6 +187,7 @@ class DeviceManager(GObject.Object):
         if entry:
             entry.enabled = enabled
         self.emit("device-list-changed")
+        self.reconcile_links()
 
     def update_settings(self, address: str, updates: dict) -> None:
         entry = self._entries[address]
@@ -191,6 +202,67 @@ class DeviceManager(GObject.Object):
             return
         entry.state = state
         self.emit("device-state-changed", address, state)
+
+    # ── persistent links (notification forwarding) ────────────────
+    def _wants_link(self, entry: DeviceEntry) -> bool:
+        plugin = entry.plugin
+        return (entry.enabled and entry.role == ROLE_WATCH
+                and plugin is not None and plugin.SUPPORTS_NOTIFICATIONS
+                and bool(entry.settings.get("forward_notifications")))
+
+    def reconcile_links(self) -> None:
+        """Start/stop persistent watch links to match per-device
+        settings. Idempotent; safe to call after any registry change."""
+        if self._ble is None:
+            return
+        want = {a for a, e in self._entries.items() if self._wants_link(e)}
+        have = set(self._keepers)
+        if want == have:
+            return
+        for address in have - want:
+            keeper = self._keepers.pop(address)
+            self._ble.submit(keeper.stop())
+        if want - have and self._bluetooth is not None:
+            self._bluetooth.power_on()
+        for address in want - have:
+            entry = self._entries[address]
+            device = entry.plugin(address=address, name=entry.name)
+            keeper = ConnectionKeeper(device, on_state=self._on_link_state)
+            self._keepers[address] = keeper
+            self._ble.submit(keeper.start())
+        self.emit("links-changed")
+
+    def set_forward_notifications(self, address: str, forward: bool) -> None:
+        self.update_settings(address, {"forward_notifications": forward})
+        self.reconcile_links()
+
+    @property
+    def has_links(self) -> bool:
+        return bool(self._keepers)
+
+    def link_connected(self, address: str) -> bool | None:
+        """Connection state of a persistent link, or None if there is
+        no link configured for this device."""
+        keeper = self._keepers.get(address)
+        return keeper.connected if keeper else None
+
+    def _on_link_state(self, address: str, connected: bool) -> None:
+        # Called from the BLE loop.
+        GLib.idle_add(lambda: (self.emit("link-state-changed", address,
+                                         connected), False)[1])
+
+    def forward_notification(self, note) -> int:
+        """Push one desktop notification to every connected watch link.
+        Returns how many pushes were started."""
+        started = 0
+        for keeper in self._keepers.values():
+            if not keeper.connected:
+                continue
+            future = self._ble.submit(keeper.run(
+                lambda device, n=note: device.push_notification(n)))
+            future.add_done_callback(_log_notification_result)
+            started += 1
+        return started
 
     # ── sync (BLE loop) ───────────────────────────────────────────
     def sync_device(self, address: str) -> bool:
@@ -241,6 +313,16 @@ class DeviceManager(GObject.Object):
 
     async def _run_sync(self, device, plugin, sync_time, push_alarms,
                         alarms, previously_pushed, monitoring=None) -> dict:
+        keeper = self._keepers.get(device.address)
+        if keeper is not None:
+            # A persistent link already owns this watch (and with it the
+            # exclusive transport) — sync over it rather than opening a
+            # competing connection. keeper.run serializes against
+            # notification pushes.
+            return await keeper.run(
+                lambda live: self._sync_steps(live, plugin, sync_time,
+                                              push_alarms, alarms,
+                                              previously_pushed, monitoring))
         return await self._guarded(
             lambda: self._sync_pipeline(device, plugin, sync_time,
                                         push_alarms, alarms,
@@ -249,9 +331,8 @@ class DeviceManager(GObject.Object):
 
     async def _sync_pipeline(self, device, plugin, sync_time, push_alarms,
                              alarms, previously_pushed, monitoring=None) -> dict:
-        """One full watch sync: connect → time → alarms → battery →
-        health reads → sync() → disconnect → ingest."""
-        result: dict = {"battery": None, "warnings": [], "pushed_ids": None}
+        """One full watch sync over a fresh connection: connect → the
+        sync steps → disconnect."""
         if self._connect_sem is None:
             self._connect_sem = asyncio.Semaphore(_MAX_CONCURRENT_CONNECTS)
         try:
@@ -261,50 +342,59 @@ class DeviceManager(GObject.Object):
             # compete for the watch on the next sync.
             async with self._connect_sem:
                 await device.connect()
-            if sync_time and plugin.SUPPORTS_TIME_SYNC:
-                await device.sync_time(time.time())
-            elif sync_time:
-                result["warnings"].append("time sync not supported")
-            if monitoring is not None and plugin.SUPPORTS_MONITORING_CONFIG:
-                # A config push failure shouldn't abort the data read.
-                try:
-                    await device.configure_monitoring(
-                        monitoring["enabled"], monitoring["interval"])
-                except Exception:
-                    log.exception("monitoring config failed: %s",
-                                  device.address)
-                    result["warnings"].append("monitoring config failed")
-            if push_alarms and plugin.SUPPORTS_ALARM_PUSH:
-                result["pushed_ids"] = await device.push_alarms(
-                    alarms, previously_pushed_ids=previously_pushed)
-            elif push_alarms:
-                result["warnings"].append("alarm push not supported")
-            result["battery"] = await device.get_battery()
-
-            activity = activity_series = hr_samples = None
-            sleep_series = workout_series = hydration_series = None
-            if plugin.SUPPORTS_ACTIVITY_READ:
-                # Streaming sources (Pebble) return per-minute deltas;
-                # cumulative sources (Bangle/PineTime) return None here
-                # and the single snapshot is used instead.
-                activity_series = await device.get_activity_series()
-                activity = await device.get_activity()
-                hr_samples = await device.get_heart_rate_samples()
-            if plugin.SUPPORTS_SLEEP_READ:
-                sleep_series = await device.get_sleep_series()
-            if plugin.SUPPORTS_WORKOUT_READ:
-                workout_series = await device.get_workout_series()
-            if plugin.SUPPORTS_HYDRATION_READ:
-                hydration_series = await device.get_hydration_series()
-            if (plugin.SUPPORTS_WEATHER_PUSH and self._settings is not None
-                    and self._settings.get_boolean("weather-enabled")):
-                await self._push_weather(device, result)
-            await device.sync()
+            return await self._sync_steps(device, plugin, sync_time,
+                                          push_alarms, alarms,
+                                          previously_pushed, monitoring)
         finally:
             await device.disconnect()
 
-        # Ingest after disconnecting so a slow write never holds the
-        # BLE link open. The Recorder marshals to the main thread.
+    async def _sync_steps(self, device, plugin, sync_time, push_alarms,
+                          alarms, previously_pushed, monitoring=None) -> dict:
+        """The sync body, over an already-open link: time → config →
+        alarms → battery → health reads → weather → sync() → ingest."""
+        result: dict = {"battery": None, "warnings": [], "pushed_ids": None}
+        if sync_time and plugin.SUPPORTS_TIME_SYNC:
+            await device.sync_time(time.time())
+        elif sync_time:
+            result["warnings"].append("time sync not supported")
+        if monitoring is not None and plugin.SUPPORTS_MONITORING_CONFIG:
+            # A config push failure shouldn't abort the data read.
+            try:
+                await device.configure_monitoring(
+                    monitoring["enabled"], monitoring["interval"])
+            except Exception:
+                log.exception("monitoring config failed: %s",
+                              device.address)
+                result["warnings"].append("monitoring config failed")
+        if push_alarms and plugin.SUPPORTS_ALARM_PUSH:
+            result["pushed_ids"] = await device.push_alarms(
+                alarms, previously_pushed_ids=previously_pushed)
+        elif push_alarms:
+            result["warnings"].append("alarm push not supported")
+        result["battery"] = await device.get_battery()
+
+        activity = activity_series = hr_samples = None
+        sleep_series = workout_series = hydration_series = None
+        if plugin.SUPPORTS_ACTIVITY_READ:
+            # Streaming sources (Pebble) return per-minute deltas;
+            # cumulative sources (Bangle/PineTime) return None here
+            # and the single snapshot is used instead.
+            activity_series = await device.get_activity_series()
+            activity = await device.get_activity()
+            hr_samples = await device.get_heart_rate_samples()
+        if plugin.SUPPORTS_SLEEP_READ:
+            sleep_series = await device.get_sleep_series()
+        if plugin.SUPPORTS_WORKOUT_READ:
+            workout_series = await device.get_workout_series()
+        if plugin.SUPPORTS_HYDRATION_READ:
+            hydration_series = await device.get_hydration_series()
+        if (plugin.SUPPORTS_WEATHER_PUSH and self._settings is not None
+                and self._settings.get_boolean("weather-enabled")):
+            await self._push_weather(device, result)
+        await device.sync()
+
+        # Ingest scheduling is a cheap idle_add; the real write happens
+        # on the main thread and never holds the BLE link.
         readings = activity_series if activity_series is not None else (
             [activity] if activity else [])
         envelopes: list[dict] = []
@@ -467,3 +557,10 @@ class DeviceManager(GObject.Object):
         if started:
             log.info("background sync: started %d device(s)", started)
         return GLib.SOURCE_CONTINUE
+
+
+def _log_notification_result(future) -> None:
+    try:
+        future.result()
+    except Exception as exc:
+        log.warning("notification push failed: %s", exc)

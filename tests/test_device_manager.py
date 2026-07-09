@@ -105,6 +105,37 @@ def test_sync_pipeline_order_and_ingest(rig):
     assert result["records"] == 3
 
 
+def test_sync_reuses_a_persistent_link(rig):
+    manager, _store, recorder = rig
+    FakeWatch.calls = []
+    device = FakeWatch(address=ADDR, name="Fake One")
+
+    class LiveKeeper:
+        connected = True
+
+        async def run(self, op):
+            return await op(device)
+
+    manager._keepers[ADDR] = LiveKeeper()
+    result = asyncio.run(manager._run_sync(
+        device, FakeWatch, sync_time=True, push_alarms=False,
+        alarms=[], previously_pushed=set()))
+
+    # The link stays owned by the keeper: no connect/disconnect.
+    assert FakeWatch.calls == ["sync_time", "battery"]
+    assert result["battery"] == 88 and result["records"] == 3
+
+
+def test_forward_notifications_setting_round_trips(rig):
+    manager, store, _ = rig
+    manager.add(ADDR, "Fake One", "fakewatch")
+    manager.set_forward_notifications(ADDR, True)   # ble=None → no keeper
+    assert manager.get(ADDR).settings["forward_notifications"] is True
+    assert not manager.has_links
+    reloaded = DeviceManager(store, None, None, None)
+    assert reloaded.get(ADDR).settings["forward_notifications"] is True
+
+
 def test_source_trust_ranks_by_quality_and_preference(rig):
     manager, _store, _ = rig
     manager.add("AA:BB", "Fake One", "fakewatch")                 # medium

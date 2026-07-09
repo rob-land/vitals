@@ -100,6 +100,24 @@ class VitalsApplication(Adw.Application):
         self.settings.connect(
             "changed::background-sync-interval",
             lambda *_: self.device_manager.reschedule_background_sync())
+        # Notification forwarding: capture desktop banners while any
+        # watch keeps a persistent link, and fan them out to it.
+        from vitals.notifications import NotificationMonitor
+        self.notification_monitor = NotificationMonitor(
+            own_app_names=(APP_NAME,))
+        self.notification_monitor.connect(
+            "notification",
+            lambda _m, note: self.device_manager.forward_notification(note))
+        self.device_manager.connect(
+            "links-changed", lambda *_: self._reconcile_notification_monitor())
+        self.device_manager.reconcile_links()
+        self._reconcile_notification_monitor()
+
+    def _reconcile_notification_monitor(self) -> None:
+        if self.device_manager.has_links:
+            self.notification_monitor.start()
+        else:
+            self.notification_monitor.stop()
 
     def _on_bluetooth_state(self, _monitor, state) -> None:
         # Hosts that idle the controller off would otherwise leave every
@@ -110,6 +128,8 @@ class VitalsApplication(Adw.Application):
             self.bluetooth.power_on()
 
     def do_shutdown(self):
+        if getattr(self, "notification_monitor", None) is not None:
+            self.notification_monitor.stop()
         if self.bluetooth is not None:
             self.bluetooth.stop()
             self.bluetooth = None

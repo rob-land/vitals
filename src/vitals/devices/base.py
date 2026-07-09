@@ -124,6 +124,20 @@ class HydrationReading:
     tds_ppm: int | None = None
 
 
+@dataclass(frozen=True)
+class WatchNotification:
+    """One desktop notification to relay to a watch.
+
+    ``id`` is stable across updates of the same banner (a messaging app
+    updating its unread count), so a watch can replace rather than
+    stack. Text is already plain (markup stripped)."""
+    id: int
+    app_name: str
+    title: str
+    body: str
+    timestamp: float  # unix-seconds when it was posted
+
+
 class Device(abc.ABC):
     """Abstract base for watch plugins.
 
@@ -369,6 +383,16 @@ class Device(abc.ABC):
         SUPPORTS_APP_INSTALL=True override it."""
         raise NotImplementedError(
             f"{self.display_name} does not support installing apps")
+
+    async def push_notification(self, note: WatchNotification) -> None:
+        """Show one forwarded desktop notification on the watch.
+
+        Called over a persistent link (see ``ConnectionKeeper``) as
+        banners arrive on the phone, not during the sync pipeline.
+        Default raises NotImplementedError; subclasses that flip
+        SUPPORTS_NOTIFICATIONS=True must override."""
+        raise NotImplementedError(
+            f"{self.display_name} does not support notifications")
 
     async def push_weather(self, key: bytes, value: bytes) -> None:
         """Store one serialized weather record on the watch, keyed by

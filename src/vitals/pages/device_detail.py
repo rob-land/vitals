@@ -107,6 +107,19 @@ class DeviceDetailPage(Adw.NavigationPage):
                             self._address, row.get_active()))
         settings.add(enabled)
 
+        if plugin is not None and plugin.SUPPORTS_NOTIFICATIONS:
+            forward = Adw.SwitchRow(
+                title="Forward notifications",
+                subtitle="Keep the watch connected and mirror phone "
+                         "notifications to it")
+            forward.set_active(
+                bool(entry.settings.get("forward_notifications")))
+            forward.connect(
+                "notify::active",
+                lambda row, _p: self._manager.set_forward_notifications(
+                    self._address, row.get_active()))
+            settings.add(forward)
+
         if plugin is not None and plugin.SUPPORTS_MONITORING_CONFIG:
             self._add_monitoring_rows(settings, entry)
         box.append(settings)
