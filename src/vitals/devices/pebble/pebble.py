@@ -152,6 +152,16 @@ class PebbleDevice(Device):
     SUPPORTS_CALENDAR_PUSH   = True
     SUPPORTS_MUSIC_CONTROL   = True
 
+    # The firmware dialog here is PRF onboarding: a factory-fresh watch
+    # ships in recovery with no normal firmware.
+    FIRMWARE_VARIANTS = [("Production (pvt)", "pvt"),
+                         ("Developer (dvt)", "dvt")]
+    FIRMWARE_INTRO = (
+        "If your watch shows a setup QR code, it has no firmware yet. "
+        "Vitals can download and install it so the watch can start up. "
+        "Keep the watch awake and nearby — you'll be asked to confirm "
+        "pairing on the watch.")
+
     # The host-side PPoGATT GATT server can only exist once per process;
     # DeviceManager serializes anything sharing this transport name.
     EXCLUSIVE_TRANSPORT = "ppogatt-server"

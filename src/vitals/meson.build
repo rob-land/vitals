@@ -52,6 +52,7 @@ python.install_sources(
     'devices/manager.py',
     'devices/omron_bp.py',
     'devices/pinetime.py',
+    'devices/pinetime_dfu.py',
     'devices/store.py',
     'devices/waterh_bottle.py',
     'devices/weather.py',

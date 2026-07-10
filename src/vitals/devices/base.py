@@ -200,10 +200,22 @@ class Device(abc.ABC):
     SENSOR_QUALITY: ClassVar[dict[str, str]] = {}
 
     # Firmware-update style. False (default): the watch is flashed over
-    # its normal connection (Pebble's PRF onboarding). True: the watch
-    # must first be put into a separate bootloader/DFU mode by the user
-    # (Bangle.js), so the app uses the DFU-mode dialog instead.
+    # its normal connection (Pebble's PRF onboarding, InfiniTime's
+    # in-firmware DFU). True: the watch must first be put into a
+    # separate bootloader/DFU mode by the user (Bangle.js), so the app
+    # uses the DFU-mode dialog instead.
     FIRMWARE_REQUIRES_DFU_MODE: ClassVar[bool] = False
+    # What the firmware dialog offers for this family. VARIANTS is
+    # (label, value) pairs shown as a picker and passed to
+    # fetch_default_firmware(variant=...); DEFAULT_VERSION pre-fills an
+    # editable version row passed as version=... — leave either empty
+    # to omit that control. INTRO replaces the dialog's generic
+    # explanation; SUCCESS_NOTE is appended to the success page (e.g.
+    # InfiniTime's validate-on-watch step).
+    FIRMWARE_VARIANTS: ClassVar[list[tuple[str, str]]] = []
+    FIRMWARE_DEFAULT_VERSION: ClassVar[str] = ""
+    FIRMWARE_INTRO: ClassVar[str] = ""
+    FIRMWARE_SUCCESS_NOTE: ClassVar[str] = ""
 
     # How the app talks to this device family:
     #   "session"       — connect on demand / on a timer, run the sync

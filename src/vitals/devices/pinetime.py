@@ -25,6 +25,7 @@ Reference: https://github.com/InfiniTimeOrg/InfiniTime/tree/main/doc/ble
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import struct
 import time
@@ -33,6 +34,12 @@ from datetime import datetime
 from vitals.devices.base import ActivityReading, Device, register_device
 
 log = logging.getLogger(__name__)
+
+# InfiniTime releases ship a legacy-DFU zip per tag; see pinetime_dfu.
+_INFINITIME_FW_URL = ("https://github.com/InfiniTimeOrg/InfiniTime/releases/"
+                      "download/{version}/pinetime-mcuboot-app-dfu-"
+                      "{version}.zip")
+_INFINITIME_FW_DEFAULT_VERSION = "1.16.1"
 
 # Bluetooth SIG canonical UUIDs we use directly.
 BATTERY_SERVICE_UUID    = "0000180f-0000-1000-8000-00805f9b34fb"
@@ -143,12 +150,26 @@ class PineTimeDevice(Device):
         "InfiniTime advertises automatically — no button press needed.",
     ]
 
-    SUPPORTS_TIME_SYNC      = True
-    SUPPORTS_ALARM_PUSH     = False
-    SUPPORTS_ACTIVITY_READ  = True
-    SUPPORTS_NOTIFICATIONS  = True
-    SUPPORTS_WEATHER_PUSH   = True
-    SUPPORTS_MUSIC_CONTROL  = True
+    SUPPORTS_TIME_SYNC       = True
+    SUPPORTS_ALARM_PUSH      = False
+    SUPPORTS_ACTIVITY_READ   = True
+    SUPPORTS_NOTIFICATIONS   = True
+    SUPPORTS_WEATHER_PUSH    = True
+    SUPPORTS_MUSIC_CONTROL   = True
+    SUPPORTS_FIRMWARE_UPDATE = True
+
+    # InfiniTime exposes legacy DFU from the running firmware, so an
+    # update flashes over the normal connection — no bootloader mode.
+    FIRMWARE_DEFAULT_VERSION = _INFINITIME_FW_DEFAULT_VERSION
+    FIRMWARE_INTRO = (
+        "Downloads an InfiniTime release and installs it over the "
+        "watch's regular connection. Keep the watch nearby and "
+        "charged; a failed transfer is safe — the watch keeps its "
+        "current firmware.")
+    FIRMWARE_SUCCESS_NOTE = (
+        "To keep the new firmware, validate it on the watch: "
+        "Settings → Firmware → Validate. Otherwise the watch reverts "
+        "on its next restart.")
 
     @classmethod
     def matches(cls, advertised_name: str | None,
@@ -294,6 +315,28 @@ class PineTimeDevice(Device):
             await self._client.write_gatt_char(
                 WEATHER_DATA_CHAR_UUID, days, response=True)
 
+    # ── Firmware update (Nordic legacy DFU) ────────────────────────
+
+    async def fetch_default_firmware(
+            self, version: str = _INFINITIME_FW_DEFAULT_VERSION) -> bytes:
+        """Download an InfiniTime DFU `.zip` from the GitHub release
+        for `version` (tags are plain, e.g. "1.16.1")."""
+        url = _INFINITIME_FW_URL.format(version=version.lstrip("v"))
+        return await asyncio.to_thread(_download_infinitime_firmware, url)
+
+    async def flash_firmware(self, firmware: bytes, on_progress=None) -> None:
+        """Flash an InfiniTime DFU `.zip` over the live connection.
+
+        The watch reboots into the new image when the transfer
+        finishes; the user must then validate it on the watch
+        (Settings → Firmware) or MCUBoot rolls back on the next
+        restart. See pinetime_dfu."""
+        from vitals.devices.pinetime_dfu import parse_dfu_package, run_legacy_dfu
+        if self._client is None:
+            raise RuntimeError("not connected")
+        init_packet, image = parse_dfu_package(firmware)
+        await run_legacy_dfu(self._client, init_packet, image, on_progress)
+
     @staticmethod
     def _encode_current_time(unix_timestamp: float) -> bytes:
         """Pack `unix_timestamp` into the 10-byte CTS Current Time
@@ -327,3 +370,13 @@ class PineTimeDevice(Device):
         if not data or len(data) < 4:
             return None
         return struct.unpack("<I", bytes(data[:4]))[0]
+
+
+def _download_infinitime_firmware(url: str, timeout: float = 120.0) -> bytes:
+    """Download an InfiniTime firmware DFU `.zip`. Blocking — call via
+    a worker thread."""
+    import urllib.request
+    log.info("PineTime: downloading firmware %s", url)
+    req = urllib.request.Request(url, headers={"User-Agent": "vitals"})
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        return resp.read()

@@ -1,20 +1,31 @@
-"""Firmware-install dialog — onboard a watch that ships in recovery.
+"""Firmware-install dialog for watches flashed over their normal
+connection.
 
-A factory-fresh Core Devices Pebble boots into PRF (recovery firmware),
-showing a setup QR code; it has no normal firmware, so time and health
-don't work. This dialog downloads the matching firmware and flashes it
-over the air, after which the watch reboots into normal operation.
+Two families use this flow today, both driven entirely by the plugin's
+firmware declarations (`FIRMWARE_INTRO`, `FIRMWARE_VARIANTS`,
+`FIRMWARE_DEFAULT_VERSION`, `FIRMWARE_SUCCESS_NOTE`):
+
+  - **Pebble** — PRF onboarding. A factory-fresh Core Devices Pebble
+    boots into recovery firmware showing a setup QR code; this dialog
+    downloads the matching normal firmware (with a pvt/dvt variant
+    picker) and flashes it over PutBytes.
+  - **PineTime** — a routine InfiniTime update over the in-firmware
+    legacy DFU service, with a version row and a post-install note
+    (the user must validate the new firmware on the watch).
+
+Watches that need a separate bootloader mode (Bangle.js) use
+BangleFirmwareDialog instead — see FIRMWARE_REQUIRES_DFU_MODE.
 
 It follows the PairingDialog pattern: a Gtk.Stack of pages driven by
 work submitted to the BleManager, with results marshalled back to GTK
-via GLib.idle_add. The whole flow — download, connect (with an
-authenticated pairing the user confirms on the watch), and the
-PutBytes transfer — runs on the BLE loop; this dialog only reflects its
-progress. A failed flash is safe: the watch stays in PRF to retry.
+via GLib.idle_add. The whole flow — download, connect, transfer — runs
+on the BLE loop; this dialog only reflects its progress. A failed
+flash is safe: the watch keeps its current firmware.
 """
 
 from __future__ import annotations
 
+import asyncio
 import logging
 
 from gi.repository import Adw, GLib, Gtk
@@ -24,12 +35,12 @@ from vitals.devices.base import available_devices
 
 log = logging.getLogger(__name__)
 
-# Variant labels shown in the picker -> the value passed to the plugin.
-_VARIANTS = [("Production (pvt)", "pvt"), ("Developer (dvt)", "dvt")]
+_GENERIC_INTRO = ("Vitals can download this watch's firmware and install "
+                  "it over the air. Keep the watch awake and nearby.")
 
 # Post-flash the watch reboots into normal firmware; wait, then retry
 # connecting and setting the clock for a while (it may still be in
-# on-device first-time setup).
+# on-device first-time setup, or swapping the new image in).
 REBOOT_INITIAL_WAIT = 30.0
 REBOOT_SYNC_WINDOW = 180.0
 REBOOT_RETRY_INTERVAL = 15.0
@@ -42,7 +53,10 @@ class FirmwareDialog(Adw.Dialog):
         super().__init__()
         self._ble = ble
         self._entry = entry
+        self._plugin = available_devices().get(entry.kind)
         self._on_done = on_done
+        self._variant_row = None
+        self._version_row = None
         # Set once the dialog is dismissed, so background flash callbacks
         # stop touching destroyed widgets (the post-reboot sync can still
         # be running on the BLE loop after the user closes the dialog).
@@ -78,27 +92,17 @@ class FirmwareDialog(Adw.Dialog):
         box.set_margin_start(18)
         box.set_margin_end(18)
 
+        intro = (self._plugin.FIRMWARE_INTRO if self._plugin else "") \
+            or _GENERIC_INTRO
         status = Adw.StatusPage(
             icon_name="software-update-available-symbolic",
-            title="Onboard Your Watch",
-            description=(
-                "If your watch shows a setup QR code, it has no firmware "
-                "yet. Vitals can download and install it so the watch can "
-                "start up. Keep the watch awake and nearby — you'll be "
-                "asked to confirm pairing on the watch."))
+            title="Install Watch Firmware", description=intro)
         status.set_vexpand(True)
         box.append(status)
 
-        group = Adw.PreferencesGroup()
-        self._variant_row = Adw.ComboRow()
-        self._variant_row.set_title("Firmware Variant")
-        self._variant_row.set_subtitle(
-            "Most watches are Production; the watch stays safe if this is "
-            "wrong")
-        self._variant_row.set_model(
-            Gtk.StringList.new([label for label, _ in _VARIANTS]))
-        group.add(self._variant_row)
-        box.append(group)
+        group = self._build_options_group()
+        if group is not None:
+            box.append(group)
 
         install = Gtk.Button(label="Download & Install")
         install.add_css_class("suggested-action")
@@ -108,6 +112,30 @@ class FirmwareDialog(Adw.Dialog):
         box.append(install)
 
         self._stack.add_named(box, "intro")
+
+    def _build_options_group(self) -> Adw.PreferencesGroup | None:
+        """Rows for whatever choices this family declares: a variant
+        picker and/or an editable version. None when there are none."""
+        if self._plugin is None:
+            return None
+        group = Adw.PreferencesGroup()
+        if self._plugin.FIRMWARE_VARIANTS:
+            self._variant_row = Adw.ComboRow()
+            self._variant_row.set_title("Firmware Variant")
+            self._variant_row.set_subtitle(
+                "A wrong choice is rejected safely — the watch keeps "
+                "its current firmware")
+            self._variant_row.set_model(Gtk.StringList.new(
+                [label for label, _ in self._plugin.FIRMWARE_VARIANTS]))
+            group.add(self._variant_row)
+        if self._plugin.FIRMWARE_DEFAULT_VERSION:
+            self._version_row = Adw.EntryRow()
+            self._version_row.set_title("Version")
+            self._version_row.set_text(self._plugin.FIRMWARE_DEFAULT_VERSION)
+            group.add(self._version_row)
+        if self._variant_row is None and self._version_row is None:
+            return None
+        return group
 
     def _build_working_page(self) -> None:
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=18)
@@ -150,10 +178,22 @@ class FirmwareDialog(Adw.Dialog):
 
     # ── Flow ──────────────────────────────────────────────────────
 
+    def _fetch_opts(self) -> dict:
+        """fetch_default_firmware kwargs from the option rows."""
+        opts: dict = {}
+        if self._variant_row is not None:
+            _label, value = self._plugin.FIRMWARE_VARIANTS[
+                self._variant_row.get_selected()]
+            opts["variant"] = value
+        if self._version_row is not None:
+            version = self._version_row.get_text().strip()
+            if version:
+                opts["version"] = version
+        return opts
+
     def _start(self) -> None:
         addr = self._entry.address
-        device_type = self._entry.kind
-        plugin = available_devices().get(device_type)
+        plugin = self._plugin
         if not addr or plugin is None:
             self._show_result(False, "No watch paired",
                               "Pair a watch before installing firmware.")
@@ -164,18 +204,17 @@ class FirmwareDialog(Adw.Dialog):
                 f"{plugin.display_name} doesn't support firmware installs.")
             return
 
-        variant = _VARIANTS[self._variant_row.get_selected()][1]
-        name = self._entry.name
-        device = plugin(address=addr, name=name)
+        opts = self._fetch_opts()
+        device = plugin(address=addr, name=self._entry.name)
 
         # No closing mid-flash — interrupting a transfer just means
-        # re-doing it (the watch stays in PRF), but discourage it.
+        # re-doing it (the watch keeps its firmware), but discourage it.
         self.set_can_close(False)
         self._set_status("Downloading firmware…", None)
         self._stack.set_visible_child_name("working")
 
         async def do_flash() -> dict:
-            firmware = await device.fetch_default_firmware(variant=variant)
+            firmware = await device.fetch_default_firmware(**opts)
             GLib.idle_add(self._set_status,
                           "Connecting — confirm pairing on your watch…", None)
             await device.connect()
@@ -233,8 +272,8 @@ class FirmwareDialog(Adw.Dialog):
             log.exception("Firmware: flash failed")
             GLib.idle_add(
                 self._show_result, False, "Install Failed",
-                f"{exc}\n\nThe watch is unharmed — it stays in recovery, "
-                "so you can try again.")
+                f"{exc}\n\nThe watch is unharmed — it keeps its current "
+                "firmware, so you can try again.")
             return
         name = result["name"] or "Your watch"
         if result["synced"]:
@@ -242,6 +281,9 @@ class FirmwareDialog(Adw.Dialog):
         else:
             description = (f"{name} will restart and finish setup. Once it's "
                            "ready, open Vitals and tap Sync Now to set the time.")
+        note = self._plugin.FIRMWARE_SUCCESS_NOTE if self._plugin else ""
+        if note:
+            description += f"\n\n{note}"
         GLib.idle_add(self._show_result, True, "Firmware Installed", description)
 
     # ── Helpers ───────────────────────────────────────────────────

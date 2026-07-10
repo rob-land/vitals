@@ -79,8 +79,8 @@ class BangleFirmwareDialog(Adw.Dialog):
         group = Adw.PreferencesGroup()
         self._version_row = Adw.EntryRow()
         self._version_row.set_title("Version (optional)")
-        default = getattr(self._plugin, "FIRMWARE_DEFAULT_VERSION", "")
-        self._version_row.set_text(default)
+        self._version_row.set_text(
+            self._plugin.FIRMWARE_DEFAULT_VERSION if self._plugin else "")
         group.add(self._version_row)
         box.append(group)
 
