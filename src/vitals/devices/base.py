@@ -189,6 +189,9 @@ class Device(abc.ABC):
     # and set the interval — so the user configures the device from
     # Vitals rather than the vendor app. See configure_monitoring.
     SUPPORTS_MONITORING_CONFIG: ClassVar[bool] = False
+    # A smart water bottle whose daily goal and drink-reminder schedule
+    # Vitals can set — see configure_hydration.
+    SUPPORTS_HYDRATION_CONFIG: ClassVar[bool] = False
 
     # Per-metric sensor quality, keyed by record-type. When several
     # devices report the same metric, Vitals resolves each time bucket to
@@ -319,6 +322,23 @@ class Device(abc.ABC):
         """
         raise NotImplementedError(
             f"{self.display_name} does not support monitoring configuration")
+
+    async def configure_hydration(self, goal_ml: int,
+                                  reminder: tuple[int, int, int] | None) -> None:
+        """Set a smart bottle's daily goal and drink-reminder schedule.
+
+        ``goal_ml`` is the daily hydration target (0 = no goal).
+        ``reminder`` is ``(start_hour, end_hour, interval_minutes)``
+        bounding when and how often the bottle nags the user to drink,
+        or None to turn reminders off.
+
+        The application applies this on every sync (it's idempotent),
+        so the bottle's config tracks the Vitals settings. Default
+        raises NotImplementedError; subclasses that flip
+        SUPPORTS_HYDRATION_CONFIG=True must override.
+        """
+        raise NotImplementedError(
+            f"{self.display_name} does not support hydration configuration")
 
     async def push_alarms(self, alarms,
                           previously_pushed_ids=frozenset()) -> set[str]:

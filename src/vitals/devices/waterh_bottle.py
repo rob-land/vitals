@@ -92,9 +92,32 @@ def req_ack_received_size(record_count: int) -> bytes:
         OP_RSP, bytes([0x03, 0x06]) + struct.pack(">H", record_count * LOG_RECORD_SIZE))
 
 
+# The reminder window the app configures out of the box: a drink
+# nudge every 60 minutes between 08:00 and 20:00.
+REMINDER_DEFAULT = (8, 20, 60)
+
+
+def encode_goal(goal_ml: int) -> bytes:
+    """The sync frame's goal field: the daily target in mL as a u16 BE
+    (0 = no goal set)."""
+    return struct.pack(">H", max(0, min(0xFFFF, int(goal_ml))))
+
+
+def encode_reminder(start_hour: int, end_hour: int,
+                    interval_min: int) -> bytes:
+    """The sync frame's reminder field: start hour, end hour and
+    interval minutes as three u16 BE — the stock payload decodes as
+    (8, 20, 60). Interval 0 turns the nudges off (needs on-device
+    verification, like the rest of the live handshake)."""
+    return struct.pack(">HHH",
+                       max(0, min(23, int(start_hour))),
+                       max(0, min(23, int(end_hour))),
+                       max(0, min(1440, int(interval_min))))
+
+
 def req_sync_data(unix_timestamp: float, goal: bytes = b"\x00\x00",
                   reminder: bytes = b"\x00\x08\x00\x14\x00\x3c") -> bytes:
-    """Push the clock (+ goal/reminder defaults); the bottle answers by
+    """Push the clock (+ goal/reminder settings); the bottle answers by
     becoming ready to hand over its drink log. Date fields are single
     bytes in local time, year modulo 100, month 1-based."""
     dt = datetime.fromtimestamp(unix_timestamp)
@@ -172,6 +195,7 @@ class WaterHBottle(Device):
     ]
 
     SUPPORTS_HYDRATION_READ = True
+    SUPPORTS_HYDRATION_CONFIG = True
 
     _RESPONSE_TIMEOUT = 6.0
     _LOG_TIMEOUT = 15.0
@@ -190,6 +214,10 @@ class WaterHBottle(Device):
         self._client = None
         self._model = model_for_name(name)
         self._battery: int | None = None
+        # Goal/reminder to push with the next clock sync (see
+        # configure_hydration); defaults match the stock payload.
+        self._goal_ml = 0
+        self._reminder = REMINDER_DEFAULT
         # Drink-log accumulation state (reset per read).
         self._drinks: list[dict] = []
         self._log_total: int | None = None
@@ -350,6 +378,20 @@ class WaterHBottle(Device):
     async def get_battery(self) -> int | None:
         return self._battery
 
+    async def configure_hydration(self, goal_ml: int,
+                                  reminder: tuple[int, int, int] | None) -> None:
+        """Record the goal and reminder window to push to the bottle.
+
+        The bottle takes both in the same frame as the clock
+        (req_sync_data), which get_hydration_series sends at the start
+        of every log drain — so this is pure bookkeeping until then.
+        ``reminder=None`` keeps the stock window but zeroes the
+        interval, which turns the nudges off.
+        """
+        self._goal_ml = int(goal_ml)
+        self._reminder = (reminder if reminder
+                          else (*REMINDER_DEFAULT[:2], 0))
+
     async def get_hydration_series(self) -> list[HydrationReading] | None:
         """Drain the bottle's drink log since the last sync.
 
@@ -365,7 +407,9 @@ class WaterHBottle(Device):
         self._no_log_data.clear()
         self._ready_for_log.clear()
 
-        await self._write(req_sync_data(time.time()))
+        await self._write(req_sync_data(
+            time.time(), goal=encode_goal(self._goal_ml),
+            reminder=encode_reminder(*self._reminder)))
         await _wait_any((self._ready_for_log,), self._RESPONSE_TIMEOUT)
 
         await self._write(req_water_logs())

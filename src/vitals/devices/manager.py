@@ -323,12 +323,14 @@ class DeviceManager(GObject.Object):
                 "enabled": bool(entry.settings.get("monitoring_enabled", True)),
                 "interval": int(entry.settings.get("monitoring_interval", 10)),
             }
+        hydration = self._hydration_config(entry) \
+            if plugin.SUPPORTS_HYDRATION_CONFIG else None
 
         self._set_state(address, "syncing")
         pushed_pins = frozenset(entry.settings.get("pushed_pin_ids", []))
         future = self._ble.submit(self._run_sync(
             device, plugin, sync_time, push_alarms, alarms, previously_pushed,
-            monitoring, pushed_pins))
+            monitoring, pushed_pins, hydration))
         future.add_done_callback(
             lambda f: GLib.idle_add(self._finish_sync, entry, f))
         return True
@@ -342,9 +344,22 @@ class DeviceManager(GObject.Object):
         async with lock:
             return await coro_factory()
 
+    def _hydration_config(self, entry: DeviceEntry) -> dict:
+        """The goal/reminder a bottle should carry: the app-wide daily
+        water goal plus this bottle's reminder-window settings."""
+        goal_ml = (self._settings.get_int("water-goal-ml")
+                   if self._settings is not None else 0)
+        reminder = None
+        if entry.settings.get("hydration_reminder_enabled", True):
+            reminder = (
+                int(entry.settings.get("hydration_reminder_start", 8)),
+                int(entry.settings.get("hydration_reminder_end", 20)),
+                int(entry.settings.get("hydration_reminder_interval", 60)))
+        return {"goal_ml": goal_ml, "reminder": reminder}
+
     async def _run_sync(self, device, plugin, sync_time, push_alarms,
                         alarms, previously_pushed, monitoring=None,
-                        pushed_pins=frozenset()) -> dict:
+                        pushed_pins=frozenset(), hydration=None) -> dict:
         keeper = self._keepers.get(device.address)
         if keeper is not None:
             # A persistent link already owns this watch (and with it the
@@ -355,17 +370,17 @@ class DeviceManager(GObject.Object):
                 lambda live: self._sync_steps(live, plugin, sync_time,
                                               push_alarms, alarms,
                                               previously_pushed, monitoring,
-                                              pushed_pins))
+                                              pushed_pins, hydration))
         return await self._guarded(
             lambda: self._sync_pipeline(device, plugin, sync_time,
                                         push_alarms, alarms,
                                         previously_pushed, monitoring,
-                                        pushed_pins),
+                                        pushed_pins, hydration),
             plugin.EXCLUSIVE_TRANSPORT)
 
     async def _sync_pipeline(self, device, plugin, sync_time, push_alarms,
                              alarms, previously_pushed, monitoring=None,
-                             pushed_pins=frozenset()) -> dict:
+                             pushed_pins=frozenset(), hydration=None) -> dict:
         """One full watch sync over a fresh connection: connect → the
         sync steps → disconnect."""
         if self._connect_sem is None:
@@ -380,13 +395,13 @@ class DeviceManager(GObject.Object):
             return await self._sync_steps(device, plugin, sync_time,
                                           push_alarms, alarms,
                                           previously_pushed, monitoring,
-                                          pushed_pins)
+                                          pushed_pins, hydration)
         finally:
             await device.disconnect()
 
     async def _sync_steps(self, device, plugin, sync_time, push_alarms,
                           alarms, previously_pushed, monitoring=None,
-                          pushed_pins=frozenset()) -> dict:
+                          pushed_pins=frozenset(), hydration=None) -> dict:
         """The sync body, over an already-open link: time → config →
         alarms → battery → health reads → weather → sync() → ingest."""
         result: dict = {"battery": None, "warnings": [], "pushed_ids": None}
@@ -403,6 +418,15 @@ class DeviceManager(GObject.Object):
                 log.exception("monitoring config failed: %s",
                               device.address)
                 result["warnings"].append("monitoring config failed")
+        if hydration is not None and plugin.SUPPORTS_HYDRATION_CONFIG:
+            # Applied with the bottle's clock sync during the log drain;
+            # a failure shouldn't abort the read either.
+            try:
+                await device.configure_hydration(
+                    hydration["goal_ml"], hydration["reminder"])
+            except Exception:
+                log.exception("hydration config failed: %s", device.address)
+                result["warnings"].append("hydration config failed")
         if push_alarms and plugin.SUPPORTS_ALARM_PUSH:
             result["pushed_ids"] = await device.push_alarms(
                 alarms, previously_pushed_ids=previously_pushed)

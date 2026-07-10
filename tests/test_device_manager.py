@@ -126,6 +126,65 @@ def test_sync_reuses_a_persistent_link(rig):
     assert result["battery"] == 88 and result["records"] == 3
 
 
+def test_hydration_config_reflects_settings(rig):
+    manager, _store, _ = rig
+    entry = manager.add(ADDR, "Bottle", "fakewatch")
+    # No Gio.Settings in the rig → no app-wide goal; per-device defaults
+    # give the stock reminder window.
+    assert manager._hydration_config(entry) == {
+        "goal_ml": 0, "reminder": (8, 20, 60)}
+
+    manager.update_settings(ADDR, {"hydration_reminder_enabled": False})
+    assert manager._hydration_config(entry)["reminder"] is None
+
+    manager.update_settings(ADDR, {"hydration_reminder_enabled": True,
+                                   "hydration_reminder_start": 9,
+                                   "hydration_reminder_end": 22,
+                                   "hydration_reminder_interval": 45})
+    assert manager._hydration_config(entry)["reminder"] == (9, 22, 45)
+
+
+def test_sync_steps_apply_hydration_config(rig):
+    manager, _store, _ = rig
+
+    class FakeBottle(Device):
+        id = "fakebottle"
+        display_name = "Fake Bottle"
+        description = "test double"
+        SUPPORTS_HYDRATION_READ = True
+        SUPPORTS_HYDRATION_CONFIG = True
+
+        applied = None
+
+        @classmethod
+        def matches(cls, name, uuids):
+            return False
+
+        async def connect(self):
+            pass
+
+        async def disconnect(self):
+            pass
+
+        async def get_battery(self):
+            return 50
+
+        async def configure_hydration(self, goal_ml, reminder):
+            FakeBottle.applied = (goal_ml, reminder)
+
+        async def get_hydration_series(self):
+            return []
+
+    device = FakeBottle(address=ADDR, name="Bottle")
+    result = asyncio.run(manager._sync_steps(
+        device, FakeBottle, sync_time=False, push_alarms=False,
+        alarms=[], previously_pushed=set(),
+        hydration={"goal_ml": 1500, "reminder": (9, 21, 30)}))
+
+    assert FakeBottle.applied == (1500, (9, 21, 30))
+    assert result["warnings"] == []
+
+
 def test_forward_notifications_setting_round_trips(rig):
     manager, store, _ = rig
     manager.add(ADDR, "Fake One", "fakewatch")

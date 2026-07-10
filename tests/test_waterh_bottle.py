@@ -1,9 +1,11 @@
 """Tests for the WaterH smart water-bottle plugin.
 
 Request hex strings and the 13-byte drink-log layout were recovered from
-the WaterH app; these pin them plus the per-model feature gating.
+the WaterH app; these pin them plus the per-model feature gating and the
+goal/reminder configuration path.
 """
 
+import asyncio
 import struct
 from datetime import datetime
 
@@ -11,10 +13,13 @@ from vitals.devices.waterh_bottle import (
     MODEL_BOOST,
     MODEL_VITA,
     OP_PUT,
+    REMINDER_DEFAULT,
     WaterHBottle,
     build_request,
     decode_water_log_packet,
     drink_timestamp,
+    encode_goal,
+    encode_reminder,
     model_for_name,
     req_ack_received_size,
     req_bottle_data,
@@ -55,6 +60,61 @@ def test_sync_data_layout():
     assert payload[4:6] == bytes([0x07, 0x03])           # date marker
     assert payload[6:12] == bytes([26, 7, 6, 14, 30, 45])  # yy m d h m s
     assert payload[12:14] == bytes([0x07, 0x26])         # reminder marker
+
+
+# ── Goal / reminder encoding ──────────────────────────────────────
+def test_encode_goal_is_u16be_clamped():
+    assert encode_goal(2000) == b"\x07\xd0"
+    assert encode_goal(0) == b"\x00\x00"
+    assert encode_goal(-5) == b"\x00\x00"
+    assert encode_goal(100_000) == b"\xff\xff"
+
+
+def test_encode_reminder_matches_the_stock_payload():
+    # The app's out-of-the-box reminder bytes decode as 08-20h / 60 min.
+    assert encode_reminder(*REMINDER_DEFAULT) == b"\x00\x08\x00\x14\x00\x3c"
+    assert encode_reminder(9, 21, 90) == struct.pack(">HHH", 9, 21, 90)
+    # Hours clamp to a day; a zero interval is the off state.
+    assert encode_reminder(30, -1, 0) == struct.pack(">HHH", 23, 0, 0)
+
+
+def test_sync_data_carries_custom_goal_and_reminder():
+    ts = datetime(2026, 7, 6, 14, 30, 45).timestamp()
+    frame = req_sync_data(ts, goal=encode_goal(1800),
+                          reminder=encode_reminder(9, 22, 45))
+    payload = frame[4:]
+    assert payload[2:4] == b"\x07\x08"                    # 1800 mL
+    assert payload[14:20] == struct.pack(">HHH", 9, 22, 45)
+
+
+def test_configure_hydration_reaches_the_sync_frame():
+    """The goal/reminder configured on the plugin ride the clock-sync
+    frame that opens the log drain."""
+    bottle = WaterHBottle("AA:BB:CC:DD:EE:FF", "WaterH-Bottle-1")
+    asyncio.run(bottle.configure_hydration(2500, (7, 21, 30)))
+
+    class SilentClient:
+        def __init__(self):
+            self.writes: list[bytes] = []
+
+        async def write_gatt_char(self, _char, data, response=False):
+            self.writes.append(bytes(data))
+
+    bottle._client = SilentClient()
+    # The fake never answers, so collapse the waits.
+    bottle._RESPONSE_TIMEOUT = 0.01
+    bottle._LOG_TIMEOUT = 0.01
+    assert asyncio.run(bottle.get_hydration_series()) == []
+    sync_frame = bottle._client.writes[0]
+    payload = sync_frame[4:]
+    assert payload[2:4] == encode_goal(2500)
+    assert payload[14:20] == encode_reminder(7, 21, 30)
+
+
+def test_configure_hydration_none_reminder_zeroes_the_interval():
+    bottle = WaterHBottle("AA:BB:CC:DD:EE:FF", "WaterH-Bottle-1")
+    asyncio.run(bottle.configure_hydration(0, None))
+    assert bottle._reminder == (8, 20, 0)
 
 
 # ── Drink-log decoding ────────────────────────────────────────────
@@ -185,4 +245,5 @@ def test_does_not_match_other_devices():
 
 def test_hydration_capability_flag():
     assert WaterHBottle.SUPPORTS_HYDRATION_READ is True
+    assert WaterHBottle.SUPPORTS_HYDRATION_CONFIG is True
     assert WaterHBottle.INTERACTION == "session"

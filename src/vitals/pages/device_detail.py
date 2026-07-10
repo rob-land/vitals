@@ -124,6 +124,9 @@ class DeviceDetailPage(Adw.NavigationPage):
             self._add_monitoring_rows(settings, entry)
         box.append(settings)
 
+        if plugin is not None and plugin.SUPPORTS_HYDRATION_CONFIG:
+            self._add_hydration_group(box, entry)
+
         self._add_preference_group(box, entry)
 
         danger = Adw.PreferencesGroup()
@@ -175,6 +178,73 @@ class DeviceDetailPage(Adw.NavigationPage):
         self._manager.update_settings(
             self._address, {"preferred_metrics": sorted(preferred)})
         self._toast("Applies to the dashboard")
+
+    # ── hydration config (smart bottles) ──────────────────────────
+    _REMINDER_INTERVALS = [30, 45, 60, 90, 120]
+
+    def _add_hydration_group(self, box, entry) -> None:
+        """Let the user set the bottle's drink-reminder window; pushed
+        to the bottle on every sync, alongside the app-wide daily water
+        goal. See Device.configure_hydration."""
+        group = Adw.PreferencesGroup(
+            title="Hydration",
+            description="Applied on the next sync, along with your daily "
+                        "water goal from Preferences.")
+
+        remind = Adw.SwitchRow(
+            title="Drink reminders",
+            subtitle="Have the bottle nudge you to drink through the day")
+        remind.set_active(
+            bool(entry.settings.get("hydration_reminder_enabled", True)))
+        group.add(remind)
+
+        start = _hour_row("From (hour)",
+                          int(entry.settings.get("hydration_reminder_start", 8)))
+        group.add(start)
+
+        end = _hour_row("Until (hour)",
+                        int(entry.settings.get("hydration_reminder_end", 20)))
+        group.add(end)
+
+        interval = Adw.ComboRow(
+            title="Reminder interval",
+            model=Gtk.StringList.new(
+                [f"{m} min" for m in self._REMINDER_INTERVALS]))
+        current = int(entry.settings.get("hydration_reminder_interval", 60))
+        interval.set_selected(self._REMINDER_INTERVALS.index(current)
+                              if current in self._REMINDER_INTERVALS else 2)
+        group.add(interval)
+
+        for row in (start, end, interval):
+            row.set_sensitive(remind.get_active())
+        remind.connect(
+            "notify::active",
+            lambda row, _p: self._on_reminder_toggled(
+                row, (start, end, interval)))
+        start.connect(
+            "notify::value",
+            lambda row, _p: self._on_reminder_setting(
+                "hydration_reminder_start", int(row.get_value())))
+        end.connect(
+            "notify::value",
+            lambda row, _p: self._on_reminder_setting(
+                "hydration_reminder_end", int(row.get_value())))
+        interval.connect(
+            "notify::selected",
+            lambda row, _p: self._on_reminder_setting(
+                "hydration_reminder_interval",
+                self._REMINDER_INTERVALS[row.get_selected()]))
+        box.append(group)
+
+    def _on_reminder_toggled(self, switch, dependent_rows) -> None:
+        active = switch.get_active()
+        for row in dependent_rows:
+            row.set_sensitive(active)
+        self._on_reminder_setting("hydration_reminder_enabled", active)
+
+    def _on_reminder_setting(self, key: str, value) -> None:
+        self._manager.update_settings(self._address, {key: value})
+        self._toast("Applies on the next sync")
 
     # ── monitoring config ─────────────────────────────────────────
     _MONITOR_INTERVALS = [10, 20, 30, 60]
@@ -283,6 +353,15 @@ def _info_row(title: str, value: str) -> Adw.ActionRow:
 def _action_row(title: str, icon: str) -> Adw.ButtonRow:
     row = Adw.ButtonRow(title=title)
     row.set_start_icon_name(icon)
+    return row
+
+
+def _hour_row(title: str, value: int) -> Adw.SpinRow:
+    row = Adw.SpinRow(
+        title=title,
+        adjustment=Gtk.Adjustment(lower=0, upper=23, step_increment=1,
+                                  page_increment=6))
+    row.set_value(value)
     return row
 
 
