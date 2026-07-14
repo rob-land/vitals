@@ -65,8 +65,12 @@ jobs:
       - name: Install flatpak-builder
         run: |
           sudo apt-get update
+          # appstream + librsvg2-common: flatpak-builder only composes
+          # appstream metadata when appstreamcli is present (install it
+          # on both arches for parity), and compose rasterises the
+          # scalable icon, which needs the SVG gdk-pixbuf loader.
           sudo apt-get install -y --no-install-recommends \
-            flatpak flatpak-builder elfutils
+            flatpak flatpak-builder elfutils appstream librsvg2-common
 
       - name: Install the GNOME runtime + SDK
         run: |

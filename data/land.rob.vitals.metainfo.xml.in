@@ -29,8 +29,8 @@
 
   <launchable type="desktop-id">land.rob.vitals.desktop</launchable>
 
-  <url type="homepage">https://codeberg.org/robland/vitals</url>
-  <url type="bugtracker">https://codeberg.org/robland/vitals/issues</url>
+  <url type="homepage">https://github.com/rob-land/vitals</url>
+  <url type="bugtracker">https://github.com/rob-land/vitals/issues</url>
 
   <developer id="land.rob">
     <name>Rob Daniel</name>
