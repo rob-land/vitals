@@ -56,15 +56,17 @@ perpetuate the pattern.
   the Pebble transport. Bundled via `build-aux/flatpak/python3-deps.json`.
 - **BlueZ**: bleak for Bangle/PineTime/sensors; dbus_fast GATT *server*
   for Pebble (needs bluetoothd `Experimental = true` on the host).
-- **Sandbox posture — deliberate**: the Flatpak grants
-  `--socket=session-bus` (unfiltered session bus). Notification
-  forwarding needs `BecomeMonitor` and music control needs to see
-  arbitrary `org.mpris.MediaPlayer2.*` names; the D-Bus proxy can allow
-  neither, and no portal exists for reading notifications. An
-  unfiltered session bus means the sandbox is not a security boundary
-  (it includes the Flatpak host interface). Acceptable for a
-  personal-device companion; **do not submit to Flathub** in this
-  shape — that would need the monitor split into a host-side helper.
+- **Sandbox posture**: the manifest keeps the D-Bus proxy (no
+  `--socket=session-bus`). Music control works through it via
+  `--talk-name=org.mpris.MediaPlayer2.*`; notification forwarding
+  cannot — `BecomeMonitor` is unproxyable and no read-notifications
+  portal exists — so in the stock build the monitor probes, fails
+  gracefully, and the per-watch switch explains itself
+  (`NotificationMonitor.available`). Installs that want forwarding
+  opt back into the open bus per-device:
+  `flatpak override --user --socket=session-bus land.rob.vitals`
+  (accepting that the sandbox then stops being a security boundary —
+  the unfiltered bus includes the Flatpak host interface).
 
 ## Before making changes
 

@@ -10,7 +10,9 @@ from __future__ import annotations
 import logging
 from datetime import datetime
 
-from gi.repository import Adw, GLib, Gtk
+from gi.repository import Adw, Gio, GLib, Gtk
+
+from vitals import const
 
 log = logging.getLogger(__name__)
 
@@ -51,6 +53,17 @@ class DeviceDetailPage(Adw.NavigationPage):
         if self._manager.get(self._address) is None:
             return  # forgotten; the page is being popped
         self._rebuild()
+
+    @staticmethod
+    def _notification_capture_available() -> bool:
+        """Whether the app's notification monitor can capture banners.
+
+        Unknown (no running app, as in tests) counts as available so
+        the switch is never disabled spuriously.
+        """
+        app = Gio.Application.get_default()
+        monitor = getattr(app, "notification_monitor", None)
+        return monitor is None or monitor.available
 
     # ── content ───────────────────────────────────────────────────
     def _rebuild(self) -> None:
@@ -112,12 +125,19 @@ class DeviceDetailPage(Adw.NavigationPage):
                 title="Forward notifications",
                 subtitle="Keep the watch connected and mirror phone "
                          "notifications to it")
-            forward.set_active(
-                bool(entry.settings.get("forward_notifications")))
-            forward.connect(
-                "notify::active",
-                lambda row, _p: self._manager.set_forward_notifications(
-                    self._address, row.get_active()))
+            if self._notification_capture_available():
+                forward.set_active(
+                    bool(entry.settings.get("forward_notifications")))
+                forward.connect(
+                    "notify::active",
+                    lambda row, _p: self._manager.set_forward_notifications(
+                        self._address, row.get_active()))
+            else:
+                forward.set_sensitive(False)
+                forward.set_subtitle(
+                    "Unavailable — this sandbox cannot read desktop "
+                    "notifications. Run “flatpak override --user "
+                    f"--socket=session-bus {const.APP_ID}” and restart")
             settings.add(forward)
 
         if plugin is not None and plugin.SUPPORTS_MONITORING_CONFIG:

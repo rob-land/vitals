@@ -141,3 +141,43 @@ def test_keeper_retries_failed_connects():
 
     device = asyncio.run(scenario())
     assert device.calls.count("connect") == 2
+
+
+# ── NotificationMonitor availability ──────────────────────────────
+def test_available_is_false_and_cached_when_the_bus_denies(monkeypatch):
+    from gi.repository import Gio, GLib
+    from vitals.notifications import NotificationMonitor
+
+    attempts = []
+
+    def deny(*_args):
+        attempts.append(1)
+        raise GLib.Error("BecomeMonitor denied")
+
+    monkeypatch.setattr(Gio, "dbus_address_get_for_bus_sync", deny)
+    monitor = NotificationMonitor()
+    assert monitor.available is False
+    assert monitor.available is False
+    assert len(attempts) == 1        # probed once, then cached
+    assert not monitor.running
+
+
+def test_available_probe_does_not_leave_the_monitor_running(monkeypatch):
+    from gi.repository import Gio
+    from vitals.notifications import NotificationMonitor
+
+    class FakeConn:
+        def call_sync(self, *_args, **_kwargs): pass
+        def add_filter(self, _cb): pass
+        def close_sync(self, _cancellable): pass
+
+    monkeypatch.setattr(
+        Gio, "dbus_address_get_for_bus_sync", lambda *_a: "addr")
+    monkeypatch.setattr(
+        Gio.DBusConnection, "new_for_address_sync",
+        staticmethod(lambda *_a, **_k: FakeConn()), raising=False)
+    monitor = NotificationMonitor()
+    assert monitor.available is True
+    assert not monitor.running       # the probe closed its connection
+    monitor.start()                  # a real start still works afterwards
+    assert monitor.running

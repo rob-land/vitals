@@ -94,10 +94,26 @@ class NotificationMonitor(GObject.Object):
         self._conn: Gio.DBusConnection | None = None
         self._dedup = NotificationDeduper()
         self._counter = 0
+        self._available: bool | None = None
 
     @property
     def running(self) -> bool:
         return self._conn is not None
+
+    @property
+    def available(self) -> bool:
+        """Whether the session bus grants ``BecomeMonitor``.
+
+        False under a filtered sandbox bus (a Flatpak without
+        ``--socket=session-bus``), where forwarding can never work.
+        First access probes with a short-lived connection unless the
+        monitor is already running; the answer is cached for the life
+        of the process.
+        """
+        if self._available is None:
+            if self.start():
+                self.stop()
+        return bool(self._available)
 
     def start(self) -> bool:
         if self._conn is not None:
@@ -117,8 +133,11 @@ class NotificationMonitor(GObject.Object):
                 None, Gio.DBusCallFlags.NONE, -1, None)
             conn.add_filter(self._on_message)
         except GLib.Error:
-            log.exception("notification monitor: could not start")
+            log.exception("notification monitor: could not start "
+                          "(BecomeMonitor denied — filtered session bus?)")
+            self._available = False
             return False
+        self._available = True
         self._conn = conn
         log.info("notification monitor: started")
         return True
