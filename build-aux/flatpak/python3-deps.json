@@ -1,0 +1,62 @@
+{
+  "name": "python3-deps",
+  "buildsystem": "simple",
+  "build-commands": [],
+  "modules": [
+    {
+      "name": "python3-PyYAML",
+      "buildsystem": "simple",
+      "build-commands": [
+        "pip3 install --verbose --exists-action=i --no-index --find-links=\"file://${PWD}\" --prefix=${FLATPAK_DEST} \"PyYAML>=6.0\" --no-build-isolation"
+      ],
+      "sources": [
+        {
+          "type": "file",
+          "url": "https://files.pythonhosted.org/packages/74/27/e5b8f34d02d9995b80abcef563ea1f8b56d20134d8f4e5e81733b1feceb2/pyyaml-6.0.3-cp313-cp313-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl",
+          "sha256": "0f29edc409a6392443abf94b9cf89ce99889a1dd5376d94316ae5145dfedd5d6",
+          "only-arches": [
+            "x86_64"
+          ]
+        },
+        {
+          "type": "file",
+          "url": "https://files.pythonhosted.org/packages/50/31/b20f376d3f810b9b2371e72ef5adb33879b25edb7a6d072cb7ca0c486398/pyyaml-6.0.3-cp313-cp313-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl",
+          "sha256": "ee2922902c45ae8ccada2c5b501ab86c36525b883eff4255313a253a3160861c",
+          "only-arches": [
+            "aarch64"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "python3-bleak",
+      "buildsystem": "simple",
+      "build-commands": [
+        "pip3 install --verbose --exists-action=i --no-index --find-links=\"file://${PWD}\" --prefix=${FLATPAK_DEST} \"bleak\" --no-build-isolation"
+      ],
+      "sources": [
+        {
+          "type": "file",
+          "url": "https://files.pythonhosted.org/packages/26/54/05aceb9cd80073805b3ed8522e3196e8cb22f70e741873fa51406c31f4e7/bleak-3.0.2-py3-none-any.whl",
+          "sha256": "39092feb9e83f1df5ad2f88e837723c7211c982ce9e9cda6235104bc2ebe0d0d"
+        },
+        {
+          "type": "file",
+          "url": "https://files.pythonhosted.org/packages/aa/85/ec643d891f4bb38347172ca99e4fbeaa55b9a5c3a744bac42c3074893482/dbus_fast-4.0.4-cp313-cp313-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl",
+          "sha256": "982235dabb7e7187df4c2c299d95a6232aebc95c8c906496f630265a10bfdf95",
+          "only-arches": [
+            "x86_64"
+          ]
+        },
+        {
+          "type": "file",
+          "url": "https://files.pythonhosted.org/packages/e9/3e/d8b733cca2dc03746496c2ea799125414cd875830a8cb384f1395ab6993d/dbus_fast-4.0.4-cp313-cp313-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl",
+          "sha256": "1fe60ce3a97e265a3ad117b7f40fc8c08357781b1a2ed3e853f29f9e35d24af7",
+          "only-arches": [
+            "aarch64"
+          ]
+        }
+      ]
+    }
+  ]
+}

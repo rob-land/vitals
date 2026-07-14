@@ -22,8 +22,8 @@ __pycache__/
 # Claude workspace
 .claude/
 
-# Generated (regenerated per build)
-build-aux/flatpak/python3-deps.json
+# Generated scratch copies (python3-deps.json itself is tracked — it's
+# the pip lockfile CI builds from; regen with ./build-all.sh --regen-deps)
 build-aux/flatpak/python3-deps.json.bak
 
 # Reverse-engineering inputs — large binaries kept on disk, not tracked

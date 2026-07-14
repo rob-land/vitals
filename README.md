@@ -32,6 +32,25 @@ Manual entry lives behind the header's **+**: food (with Open Food
 Facts and USDA FoodData Central lookup), water quick-add, and
 measurements (weight, blood pressure, glucose, and more).
 
+## Install (Flatpak)
+
+CI publishes a signed Flatpak repo (x86_64 + aarch64) to GitHub Pages
+on every push to `main`:
+
+```sh
+flatpak remote-add --user vitals \
+  https://rob-land.github.io/vitals/vitals.flatpakrepo
+flatpak install --user vitals land.rob.vitals
+```
+
+Notification forwarding to watches needs the unfiltered session bus,
+which the sandboxed build deliberately does not request; opt in per
+install with:
+
+```sh
+flatpak override --user --socket=session-bus land.rob.vitals
+```
+
 ## Build & run
 
 ```sh

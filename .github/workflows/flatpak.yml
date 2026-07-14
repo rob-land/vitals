@@ -1,0 +1,186 @@
+name: Flatpak
+
+# Builds vitals natively for x86_64 and aarch64 (GitHub's free arm
+# runners — no qemu) and publishes a GPG-signed OSTree Flatpak repo to
+# GitHub Pages on every push to main.
+#
+# Install from the published repo:
+#   flatpak remote-add --user vitals \
+#     https://rob-land.github.io/vitals/vitals.flatpakrepo
+#   flatpak install --user vitals land.rob.vitals
+#
+# Secrets required (Settings → Secrets and variables → Actions):
+#
+#   FLATPAK_GPG_PRIVATE_KEY   armored `gpg --export-secret-keys --armor <KEY_ID>`
+#   FLATPAK_GPG_KEY_ID        the key id used to sign commits + summary
+#
+# The repo is rebuilt from scratch each run (stateless — only the
+# latest commit per ref), so clients never get static deltas; plain
+# object pulls are fine at this scale.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  APP_ID: land.rob.vitals
+  MANIFEST: build-aux/flatpak/land.rob.vitals.json
+  RUNTIME_VERSION: "50"
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install the GTK4 / libadwaita GI stack
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            python3-gi gir1.2-gtk-4.0 gir1.2-adw-1
+      - name: Install Python test deps
+        run: |
+          python3 -m venv --system-site-packages .venv
+          .venv/bin/pip install pytest PyYAML bleak dbus_fast
+      - name: Run the test suite
+        run: .venv/bin/python -m pytest tests/ -q
+
+  build:
+    strategy:
+      matrix:
+        include:
+          - arch: x86_64
+            runner: ubuntu-24.04
+          - arch: aarch64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install flatpak-builder
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            flatpak flatpak-builder
+
+      - name: Install the GNOME runtime + SDK
+        run: |
+          flatpak remote-add --user --if-not-exists flathub \
+            https://dl.flathub.org/repo/flathub.flatpakrepo
+          flatpak install --user --noninteractive flathub \
+            org.gnome.Platform//${RUNTIME_VERSION} \
+            org.gnome.Sdk//${RUNTIME_VERSION}
+
+      - name: Cache flatpak-builder state
+        uses: actions/cache@v4
+        with:
+          path: .flatpak-builder
+          key: flatpak-builder-${{ matrix.arch }}-${{ hashFiles('build-aux/flatpak/*.json') }}
+          restore-keys: flatpak-builder-${{ matrix.arch }}-
+
+      - name: Build
+        run: |
+          flatpak-builder --user --arch=${{ matrix.arch }} --force-clean \
+            --disable-rofiles-fuse --repo=repo _flatpak "$MANIFEST"
+
+      - name: Bundle
+        run: |
+          flatpak build-bundle --arch=${{ matrix.arch }} repo \
+            "vitals-${{ matrix.arch }}.flatpak" "$APP_ID"
+
+      - name: Pack the OSTree repo for the publish job
+        run: tar -cf "repo-${{ matrix.arch }}.tar" -C repo .
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: vitals-${{ matrix.arch }}.flatpak
+          path: vitals-${{ matrix.arch }}.flatpak
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: repo-${{ matrix.arch }}
+          path: repo-${{ matrix.arch }}.tar
+
+  publish:
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    needs: [test, build]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Install flatpak + ostree
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends flatpak ostree
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: repo-*
+          merge-multiple: true
+
+      - name: Merge both arch repos into the site repo
+        run: |
+          mkdir -p site/repo arch-x86_64 arch-aarch64
+          tar -xf repo-x86_64.tar -C arch-x86_64
+          tar -xf repo-aarch64.tar -C arch-aarch64
+          ostree init --repo=site/repo --mode=archive
+          ostree pull-local --repo=site/repo arch-x86_64
+          ostree pull-local --repo=site/repo arch-aarch64
+          ostree refs --repo=site/repo
+
+      - name: Import the signing key and sign everything
+        env:
+          GPG_PRIVATE_KEY: ${{ secrets.FLATPAK_GPG_PRIVATE_KEY }}
+          GPG_KEY_ID: ${{ secrets.FLATPAK_GPG_KEY_ID }}
+        run: |
+          printf '%s\n' "$GPG_PRIVATE_KEY" | gpg --batch --import
+          while read -r ref; do
+            [ -z "$ref" ] && continue
+            commit=$(ostree rev-parse --repo=site/repo "$ref")
+            ostree gpg-sign --repo=site/repo "$commit" "$GPG_KEY_ID"
+          done < <(ostree refs --repo=site/repo)
+          flatpak build-update-repo --gpg-sign="$GPG_KEY_ID" site/repo
+
+      - name: Write the .flatpakrepo file and landing page
+        env:
+          GPG_KEY_ID: ${{ secrets.FLATPAK_GPG_KEY_ID }}
+          OWNER: ${{ github.repository_owner }}
+          REPO_NAME: ${{ github.event.repository.name }}
+          HOMEPAGE: ${{ github.server_url }}/${{ github.repository }}
+        run: |
+          base_url="https://${OWNER}.github.io/${REPO_NAME}"
+          cat > site/vitals.flatpakrepo <<EOF
+          [Flatpak Repo]
+          Title=Vitals
+          Url=${base_url}/repo/
+          Homepage=${HOMEPAGE}
+          Comment=Local-first health tracker for mobile Linux
+          Description=Vitals — watch sync, BLE health sensors and manual logging in one GTK4 app
+          GPGKey=$(gpg --export "$GPG_KEY_ID" | base64 -w0)
+          EOF
+          cat > site/index.html <<EOF
+          <!doctype html><meta charset="utf-8"><title>Vitals Flatpak repo</title>
+          <pre>
+          flatpak remote-add --user vitals ${base_url}/vitals.flatpakrepo
+          flatpak install --user vitals ${APP_ID}
+          </pre>
+          EOF
+
+      - uses: actions/configure-pages@v5
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+      - id: deployment
+        uses: actions/deploy-pages@v4
