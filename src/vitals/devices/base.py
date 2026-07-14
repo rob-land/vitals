@@ -571,6 +571,7 @@ def _load_builtins() -> None:
     from vitals.devices import (
         and_oximeter,  # noqa: F401
         bangle,  # noqa: F401
+        ihealth_bg5,  # noqa: F401
         omron_bp,  # noqa: F401
         pinetime,  # noqa: F401
         waterh_bottle,  # noqa: F401
@@ -662,6 +663,8 @@ CATEGORY_INFO: dict[str, tuple[str, str, str]] = {
                        "OMRON and standard BP cuffs"),
     "scale": ("Scale", "bluetooth-symbolic", "Weight & body composition"),
     "oximeter": ("Pulse oximeter", "bluetooth-symbolic", "SpO2 & pulse"),
+    "glucose": ("Glucose meter", "bluetooth-symbolic",
+                "iHealth Gluco+ and BG-series"),
     "ring": ("Smart ring", "bluetooth-symbolic", "Yucheng / TK-series"),
     "bottle": ("Smart water bottle", "bluetooth-symbolic",
                "Hydration tracking"),

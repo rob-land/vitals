@@ -48,6 +48,7 @@ python.install_sources(
     'devices/bangle.py',
     'devices/bangle_dfu.py',
     'devices/bangle_store.py',
+    'devices/ihealth_bg5.py',
     'devices/keeper.py',
     'devices/manager.py',
     'devices/omron_bp.py',
