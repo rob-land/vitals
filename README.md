@@ -34,14 +34,16 @@ measurements (weight, blood pressure, glucose, and more).
 
 ## Install (Flatpak)
 
-CI publishes a signed Flatpak repo (x86_64 + aarch64) to GitHub Pages
-on every push to `main`:
+CI builds x86_64 + aarch64 on every push to `main` and publishes into
+the shared [rob-land Flatpak repo](https://rob-land.github.io/flatpak-repo/):
 
 ```sh
-flatpak remote-add --user vitals \
-  https://rob-land.github.io/vitals/vitals.flatpakrepo
-flatpak install --user vitals land.rob.vitals
+flatpak remote-add --user rob-land \
+  https://rob-land.github.io/flatpak-repo/rob-land.flatpakrepo
+flatpak install --user rob-land land.rob.vitals
 ```
+
+Direct-install bundles also hang off this repo's `continuous` release.
 
 Notification forwarding to watches needs the unfiltered session bus,
 which the sandboxed build deliberately does not request; opt in per

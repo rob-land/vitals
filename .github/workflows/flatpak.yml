@@ -1,22 +1,14 @@
 name: Flatpak
 
 # Builds vitals natively for x86_64 and aarch64 (GitHub's free arm
-# runners — no qemu) and publishes a GPG-signed OSTree Flatpak repo to
-# GitHub Pages on every push to main.
+# runners — no qemu). On every push to main the per-arch OSTree repos
+# and .flatpak bundles are uploaded to the rolling `continuous`
+# release; the shared rob-land/flatpak-repo aggregator picks those up
+# (hourly cron or manual dispatch), merges every app, GPG-signs, and
+# publishes the combined repo to
+# https://rob-land.github.io/flatpak-repo/ — install from there.
 #
-# Install from the published repo:
-#   flatpak remote-add --user vitals \
-#     https://rob-land.github.io/vitals/vitals.flatpakrepo
-#   flatpak install --user vitals land.rob.vitals
-#
-# Secrets required (Settings → Secrets and variables → Actions):
-#
-#   FLATPAK_GPG_PRIVATE_KEY   armored `gpg --export-secret-keys --armor <KEY_ID>`
-#   FLATPAK_GPG_KEY_ID        the key id used to sign commits + summary
-#
-# The repo is rebuilt from scratch each run (stateless — only the
-# latest commit per ref), so clients never get static deltas; plain
-# object pulls are fine at this scale.
+# No secrets required here: signing happens only in the aggregator.
 
 on:
   push:
@@ -110,81 +102,35 @@ jobs:
           name: repo-${{ matrix.arch }}
           path: repo-${{ matrix.arch }}.tar
 
-  publish:
+  release:
     if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
     needs: [test, build]
     runs-on: ubuntu-24.04
     permissions:
-      contents: read
-      pages: write
-      id-token: write
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
+      contents: write
     steps:
-      - name: Install flatpak + ostree
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends flatpak ostree
-
       - uses: actions/download-artifact@v8
         with:
-          pattern: repo-*
           merge-multiple: true
 
-      - name: Merge both arch repos into the site repo
-        run: |
-          mkdir -p site/repo arch-x86_64 arch-aarch64
-          tar -xf repo-x86_64.tar -C arch-x86_64
-          tar -xf repo-aarch64.tar -C arch-aarch64
-          ostree init --repo=site/repo --mode=archive
-          ostree pull-local --repo=site/repo arch-x86_64
-          ostree pull-local --repo=site/repo arch-aarch64
-          ostree refs --repo=site/repo
-
-      - name: Import the signing key and sign everything
+      - name: Update the rolling continuous release
         env:
-          GPG_PRIVATE_KEY: ${{ secrets.FLATPAK_GPG_PRIVATE_KEY }}
-          GPG_KEY_ID: ${{ secrets.FLATPAK_GPG_KEY_ID }}
+          GH_TOKEN: ${{ github.token }}
         run: |
-          printf '%s\n' "$GPG_PRIVATE_KEY" | gpg --batch --import
-          while read -r ref; do
-            [ -z "$ref" ] && continue
-            commit=$(ostree rev-parse --repo=site/repo "$ref")
-            ostree gpg-sign --repo=site/repo "$commit" "$GPG_KEY_ID"
-          done < <(ostree refs --repo=site/repo)
-          flatpak build-update-repo --gpg-sign="$GPG_KEY_ID" site/repo
+          gh release create continuous --repo "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA" --title "Continuous build" \
+            --notes "Rolling artifacts consumed by rob-land/flatpak-repo. Bundles are unsigned; prefer installing from the signed shared repo." \
+            --latest=false 2>/dev/null || true
+          gh release upload continuous --repo "$GITHUB_REPOSITORY" --clobber \
+            repo-x86_64.tar repo-aarch64.tar \
+            vitals-x86_64.flatpak vitals-aarch64.flatpak
 
-      - name: Write the .flatpakrepo file and landing page
+      - name: Nudge the aggregator (best-effort)
         env:
-          GPG_KEY_ID: ${{ secrets.FLATPAK_GPG_KEY_ID }}
-          OWNER: ${{ github.repository_owner }}
-          REPO_NAME: ${{ github.event.repository.name }}
-          HOMEPAGE: ${{ github.server_url }}/${{ github.repository }}
+          GH_TOKEN: ${{ secrets.AGGREGATOR_DISPATCH_TOKEN }}
         run: |
-          base_url="https://${OWNER}.github.io/${REPO_NAME}"
-          cat > site/vitals.flatpakrepo <<EOF
-          [Flatpak Repo]
-          Title=Vitals
-          Url=${base_url}/repo/
-          Homepage=${HOMEPAGE}
-          Comment=Local-first health tracker for mobile Linux
-          Description=Vitals — watch sync, BLE health sensors and manual logging in one GTK4 app
-          GPGKey=$(gpg --export "$GPG_KEY_ID" | base64 -w0)
-          EOF
-          cat > site/index.html <<EOF
-          <!doctype html><meta charset="utf-8"><title>Vitals Flatpak repo</title>
-          <pre>
-          flatpak remote-add --user vitals ${base_url}/vitals.flatpakrepo
-          flatpak install --user vitals ${APP_ID}
-          </pre>
-          EOF
-
-      - uses: actions/configure-pages@v6
-
-      - uses: actions/upload-pages-artifact@v5
-        with:
-          path: site
-
-      - id: deployment
-        uses: actions/deploy-pages@v5
+          # Without the optional PAT the hourly cron picks the release
+          # up instead; this step just shortens the latency when a
+          # token with actions:write on rob-land/flatpak-repo exists.
+          [ -z "$GH_TOKEN" ] && { echo "no dispatch token — aggregator cron will pick this up"; exit 0; }
+          gh workflow run aggregate.yml --repo rob-land/flatpak-repo || true
