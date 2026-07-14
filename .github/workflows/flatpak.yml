@@ -37,7 +37,7 @@ jobs:
   test:
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Install the GTK4 / libadwaita GI stack
         run: |
           sudo apt-get update
@@ -60,7 +60,7 @@ jobs:
             runner: ubuntu-24.04-arm
     runs-on: ${{ matrix.runner }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install flatpak-builder
         run: |
@@ -81,7 +81,7 @@ jobs:
             org.gnome.Sdk//${RUNTIME_VERSION}
 
       - name: Cache flatpak-builder state
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: .flatpak-builder
           key: flatpak-builder-${{ matrix.arch }}-${{ hashFiles('build-aux/flatpak/*.json') }}
@@ -100,12 +100,12 @@ jobs:
       - name: Pack the OSTree repo for the publish job
         run: tar -cf "repo-${{ matrix.arch }}.tar" -C repo .
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: vitals-${{ matrix.arch }}.flatpak
           path: vitals-${{ matrix.arch }}.flatpak
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: repo-${{ matrix.arch }}
           path: repo-${{ matrix.arch }}.tar
@@ -127,7 +127,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends flatpak ostree
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           pattern: repo-*
           merge-multiple: true
@@ -180,11 +180,11 @@ jobs:
           </pre>
           EOF
 
-      - uses: actions/configure-pages@v5
+      - uses: actions/configure-pages@v6
 
-      - uses: actions/upload-pages-artifact@v3
+      - uses: actions/upload-pages-artifact@v5
         with:
           path: site
 
       - id: deployment
-        uses: actions/deploy-pages@v4
+        uses: actions/deploy-pages@v5
