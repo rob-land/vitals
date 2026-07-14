@@ -16,7 +16,7 @@ name: Publish Flatpak
 #   DEPLOY_SSH_PRIVATE_KEY    base64 of an SSH private key authorised for the deploy account
 #   DEPLOY_KNOWN_HOSTS        contents of `ssh-keyscan <flatpak-repo-host>`
 #   DEPLOY_TARGET             rsync target, e.g.
-#                             `flatpak-deploy@10.19.77.2:/mnt/raid/docker/flatpak-repo/web/repo`
+#                             `deploy-user@repo-host:/path/to/flatpak-repo/web/repo`
 
 on:
   push:
