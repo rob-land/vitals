@@ -570,6 +570,7 @@ def _load_builtins() -> None:
     # Import side effects register built-in plugins.
     from vitals.devices import (
         and_oximeter,  # noqa: F401
+        and_uc450,  # noqa: F401
         bangle,  # noqa: F401
         ihealth_bg5,  # noqa: F401
         omron_bp,  # noqa: F401

@@ -44,6 +44,7 @@ python.install_sources(
   files(
     'devices/__init__.py',
     'devices/and_oximeter.py',
+    'devices/and_uc450.py',
     'devices/base.py',
     'devices/bangle.py',
     'devices/bangle_dfu.py',
