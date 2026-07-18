@@ -17,12 +17,14 @@ against a **btsnoop capture of the vendor app driving the real scale**
 (2026-07-17, `hci_snoop20260708171816.cfa` — onboarding + a live
 weigh-in). Where the two disagree, this doc records the wire truth.
 
-> **Status: protocol capture-verified (2026-07-17).** The full vendor
-> exchange — subscribe → login → setup → set-time → sync → measurement
-> (90.60 kg + 520 Ω impedance) — was decoded from the capture and the
-> plugin + unit tests now pin those exact bytes. What remains is an
-> end-to-end run of the *plugin* against the scale (see "Remaining
-> unknowns").
+> **Status: hardware-verified end-to-end (2026-07-18).** The full vendor
+> exchange — subscribe → login → set-time → sync → measurement — was
+> first decoded from a btsnoop capture (90.60 kg + 520 Ω), then the
+> rewritten plugin drove the real `UC-450BLE-CV_A22CF9` itself and read a
+> **live weigh-in of 90.3 kg + 494 Ω impedance** (fresh values, not a
+> replay), producing a `body_weight` record with the scale-stamped time.
+> The already-onboarded scale skipped init/binding and accepted the
+> `bound=1` login echo from a host it had never seen.
 
 ## Decompile → capture corrections
 
@@ -187,17 +189,22 @@ records.
 
 ## Remaining unknowns
 
-1. **Plugin end-to-end run** — the protocol is capture-verified but the
-   rewritten plugin hasn't itself driven the scale yet (subscribe →
-   login → sync → record). Needs a weigh-in with Vitals scanning.
-2. **Stored-measurement replay** — the capture shows one live reading
-   (`remaining=0`); multiple queued readings counting down is inferred.
-3. Whether the scale advertises unsolicited after an *unattended*
-   weigh-in (opportunistic model), or only while awake from a step-on.
-4. The trailing byte after the flagged measurement fields, the `0x0004`
+The end-to-end plugin run (2026-07-18) confirmed the live path
+(subscribe → login → set-time → sync → one `remaining=0` measurement,
+90.3 kg + 494 Ω); these edges are still unproven:
+
+1. **Multiple stored readings** — every real weigh-in so far streamed a
+   single `remaining=0` frame; the countdown drain over several queued
+   readings is inferred from the field layout, not yet observed.
+2. Whether the scale advertises unsolicited after an *unattended*
+   weigh-in (opportunistic model), or only while awake from a step-on —
+   both live reads were driven by a scan running as the scale woke.
+3. The trailing byte after the flagged measurement fields, the `0x0004`
    binding-response payload (`01 de`), and the hello's constant bytes.
-5. Login-response semantics of the `bound` byte on a factory-fresh
-   scale when no binding follows (the plugin sends binding if asked).
+4. The factory-fresh path (init request → init response → binding): the
+   test scale was already onboarded, so it skipped straight to login and
+   accepted `bound=1`. The plugin still answers an init request + binds
+   if a fresh scale asks, but that branch is untested on hardware.
 
 Artifacts: Blutter findings at
 `~/projects/mobile-linux/and-heart-track-teardown/blutter_findings/uc450_*.md`;
